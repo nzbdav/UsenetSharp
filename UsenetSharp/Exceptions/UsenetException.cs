@@ -1,4 +1,4 @@
-﻿using UsenetSharp.Models;
+using UsenetSharp.Models;
 
 namespace UsenetSharp.Exceptions;
 

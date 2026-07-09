@@ -1,4 +1,4 @@
-﻿namespace UsenetSharp.Concurrency;
+namespace UsenetSharp.Concurrency;
 
 public class AsyncSemaphore : IDisposable
 {
