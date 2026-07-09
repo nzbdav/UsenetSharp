@@ -1,33 +1,52 @@
 namespace UsenetSharp.Clients;
 
-public partial class UsenetClient : IUsenetClient, IDisposable
+public partial class UsenetClient : IUsenetClient, IDisposable, IAsyncDisposable
 {
-    private bool _disposed;
+    private volatile bool _disposed;
 
     public async Task WaitForReadyAsync(CancellationToken cancellationToken = default)
     {
-        await _commandLock.WaitAsync(cancellationToken);
-        _commandLock.Release();
+        ThrowIfDisposed();
+        await _commandLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            ThrowIfDisposed();
+        }
+        finally
+        {
+            _commandLock.Release();
+        }
     }
 
     public void Dispose()
-    {
-        Dispose(true);
-        GC.SuppressFinalize(this);
-    }
-
-    protected virtual void Dispose(bool disposing)
     {
         if (_disposed)
         {
             return;
         }
 
-        if (disposing)
+        _disposed = true;
+        _connectionCts.Cancel();
+        _commandLock.WaitAsync().GetAwaiter().GetResult();
+        CleanupConnection(createNewLifetime: false);
+        _commandLock.Release();
+        _commandLock.Dispose();
+        GC.SuppressFinalize(this);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_disposed)
         {
-            CleanupConnection();
+            return;
         }
 
         _disposed = true;
+        await _connectionCts.CancelAsync().ConfigureAwait(false);
+        await _commandLock.WaitAsync().ConfigureAwait(false);
+        CleanupConnection(createNewLifetime: false);
+        _commandLock.Release();
+        _commandLock.Dispose();
+        GC.SuppressFinalize(this);
     }
 }

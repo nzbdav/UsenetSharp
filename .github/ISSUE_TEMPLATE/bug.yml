@@ -1,0 +1,51 @@
+name: Bug report
+description: Report reproducible incorrect behavior.
+title: "bug: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: Do not include credentials, access tokens, or private article data.
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: UsenetSharp version
+      placeholder: 1.0.6
+    validations:
+      required: true
+  - type: input
+    id: runtime
+    attributes:
+      label: .NET and operating system
+      placeholder: .NET 9.0 on Ubuntu 24.04
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Include sanitized code and deterministic steps when possible.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs or exception
+      render: shell
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I removed credentials and private data.
+          required: true
+        - label: I searched existing issues for duplicates.
+          required: true

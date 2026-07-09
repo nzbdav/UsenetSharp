@@ -1,4 +1,4 @@
-﻿namespace UsenetSharp.Models;
+namespace UsenetSharp.Models;
 
 public record UsenetAuthenticateResponse : UsenetResponse
 {

@@ -10,36 +10,52 @@ public partial class UsenetClient
 {
     public async Task ConnectAsync(string host, int port, bool useSsl, CancellationToken cancellationToken)
     {
-        // Clean up any existing connection
-        CleanupConnection();
-        await _commandLock.WaitAsync(cancellationToken);
+        ThrowIfDisposed();
+        ValidateCommandValue(host, nameof(host), 253);
+        ArgumentOutOfRangeException.ThrowIfLessThan(port, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(port, 65535);
+
+        await _commandLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            ThrowIfDisposed();
+            CleanupConnection();
+            using var operationCts = CreateOperationTokenSource(cancellationToken);
+
             _tcpClient = new TcpClient();
-            await _tcpClient.ConnectAsync(host, port, cancellationToken);
+            await _tcpClient.ConnectAsync(host, port, operationCts.Token).ConfigureAwait(false);
             _stream = _tcpClient.GetStream();
 
             if (useSsl)
             {
                 var sslStream = new SslStream(_stream, false);
-                await sslStream.AuthenticateAsClientAsync(host, null,
-                    System.Security.Authentication.SslProtocols.Tls12 |
-                    System.Security.Authentication.SslProtocols.Tls13, true);
+                await sslStream.AuthenticateAsClientAsync(new SslClientAuthenticationOptions
+                {
+                    TargetHost = host,
+                    EnabledSslProtocols = System.Security.Authentication.SslProtocols.Tls12 |
+                                          System.Security.Authentication.SslProtocols.Tls13,
+                    CertificateRevocationCheckMode = System.Security.Cryptography.X509Certificates.X509RevocationMode.Online
+                }, operationCts.Token).ConfigureAwait(false);
                 _stream = sslStream;
             }
 
             // Use Latin1 encoding to preserve exact byte values 0-255 for yEnc-encoded content
-            _reader = new StreamReader(_stream, Encoding.Latin1);
+            _reader = new NntpLineReader(_stream);
             _writer = new StreamWriter(_stream, Encoding.Latin1) { AutoFlush = true };
 
             // Read the server response
-            var response = await ReadLineAsync(_cts.Token);
+            var response = await ReadLineAsync(operationCts.Token).ConfigureAwait(false);
             var responseCode = ParseResponseCode(response);
 
             // NNTP servers typically respond with "200" or "201" for successful connection
             if (responseCode != (int)UsenetResponseType.ServerReadyPostingAllowed &&
                 responseCode != (int)UsenetResponseType.ServerReadyNoPostingAllowed)
                 throw new UsenetConnectionException(response!) { ResponseCode = responseCode };
+        }
+        catch
+        {
+            CleanupConnection();
+            throw;
         }
         finally
         {

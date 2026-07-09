@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: 1
+  DOTNET_NOLOGO: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 1
+
+jobs:
+  build-test-pack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: 9.0.x
+
+      - name: Restore locked dependencies
+        run: dotnet restore UsenetSharp.sln --locked-mode
+
+      - name: Build
+        run: dotnet build UsenetSharp.sln --configuration Release --no-restore
+
+      - name: Verify whitespace
+        run: dotnet format whitespace UsenetSharp.sln --verify-no-changes --no-restore
+
+      - name: Verify code style
+        run: dotnet format style UsenetSharp.sln --verify-no-changes --no-restore --severity warn
+
+      - name: Run deterministic tests
+        run: dotnet test UsenetSharp.sln --configuration Release --no-build --filter "TestCategory!=Integration" --logger "trx;LogFileName=test-results.trx" --collect "XPlat Code Coverage"
+
+      - name: Upload test results and coverage
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: test-results
+          path: "**/TestResults/**"
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Pack
+        run: dotnet pack UsenetSharp/UsenetSharp.csproj --configuration Release --no-build --output artifacts
+
+      - name: Validate package contents
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import glob
+          import zipfile
+
+          packages = glob.glob("artifacts/*.nupkg")
+          symbols = glob.glob("artifacts/*.snupkg")
+          assert len(packages) == 1, packages
+          assert len(symbols) == 1, symbols
+
+          with zipfile.ZipFile(packages[0]) as package:
+              names = set(package.namelist())
+              assert {
+                  "lib/net9.0/UsenetSharp.dll",
+                  "lib/net9.0/UsenetSharp.xml",
+                  "README.md",
+                  "LICENSE",
+                  "CHANGELOG.md",
+              } <= names
+
+          with zipfile.ZipFile(symbols[0]) as symbol_package:
+              assert "lib/net9.0/UsenetSharp.pdb" in symbol_package.namelist()
+          PY
+
+      - name: Upload package artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: packages
+          path: artifacts/*
+          if-no-files-found: error
+          retention-days: 7

@@ -1,6 +1,7 @@
 using System.IO.Pipelines;
 using System.Runtime.ExceptionServices;
 using System.Text;
+using UsenetSharp.Exceptions;
 using UsenetSharp.Models;
 
 namespace UsenetSharp.Clients;
@@ -19,9 +20,11 @@ public partial class UsenetClient
         CancellationToken cancellationToken
     )
     {
+        ThrowIfDisposed();
+        var validatedSegmentId = ValidateSegmentId(segmentId);
         try
         {
-            await _commandLock.WaitAsync(cancellationToken);
+            await _commandLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         }
         catch
         {
@@ -30,15 +33,18 @@ public partial class UsenetClient
         }
 
         var isReadBodyToPipeAsyncStarted = false;
+        CancellationTokenSource? operationCts = null;
 
         try
         {
+            ThrowIfDisposed();
             ThrowIfUnhealthy();
             ThrowIfNotConnected();
+            operationCts = CreateOperationTokenSource(cancellationToken);
 
             // Send BODY command with message-id
-            await WriteLineAsync($"BODY <{segmentId}>".AsMemory(), _cts.Token);
-            var response = await ReadLineAsync(_cts.Token);
+            await WriteLineAsync($"BODY <{validatedSegmentId}>".AsMemory(), operationCts.Token).ConfigureAwait(false);
+            var response = await ReadLineAsync(operationCts.Token).ConfigureAwait(false);
             var responseCode = ParseResponseCode(response);
 
             // Article retrieved - body follows
@@ -46,18 +52,13 @@ public partial class UsenetClient
             {
                 // Create a pipe for streaming the body data
                 var pipe = new Pipe(new PipeOptions(
-                    pauseWriterThreshold: long.MaxValue,
-                    resumeWriterThreshold: long.MaxValue - 1
-                ));
+                    pauseWriterThreshold: 1024 * 1024,
+                    resumeWriterThreshold: 512 * 1024));
 
                 // Start background task to read the body and write to pipe
                 isReadBodyToPipeAsyncStarted = true;
-                _ = ReadBodyToPipeAsync(pipe.Writer, _cts.Token, () =>
-                {
-                    pipe.Writer.Complete();
-                    _commandLock.Release();
-                    onConnectionReadyAgain?.Invoke(ArticleBodyResult.Retrieved);
-                });
+                _ = ReadBodyToPipeAsync(pipe.Writer, operationCts, onConnectionReadyAgain);
+                operationCts = null;
 
                 // Return immediately with the stream and headers
                 return new UsenetBodyResponse
@@ -81,33 +82,38 @@ public partial class UsenetClient
         {
             if (!isReadBodyToPipeAsyncStarted)
             {
+                operationCts?.Dispose();
                 _commandLock.Release();
                 onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved);
             }
         }
     }
 
-    private async Task ReadBodyToPipeAsync(PipeWriter writer, CancellationToken cancellationToken, Action onFinally)
+    private async Task ReadBodyToPipeAsync(
+        PipeWriter writer,
+        CancellationTokenSource operationCts,
+        Action<ArticleBodyResult>? onConnectionReadyAgain)
     {
+        Exception? failure = null;
         try
         {
             if (_reader == null)
             {
-                await writer.CompleteAsync();
-                return;
+                throw new UsenetNotConnectedException("The NNTP connection closed before the article body was read.");
             }
 
             var shouldWrite = true;
+            var cancellationToken = operationCts.Token;
 
             // Read lines until we encounter the termination sequence (single dot on a line)
-            while (!cancellationToken.IsCancellationRequested)
+            while (true)
             {
-                var line = await ReadLineAsync(cancellationToken);
+                var line = await ReadLineAsync(cancellationToken).ConfigureAwait(false);
 
                 if (line == null)
                 {
-                    // End of stream
-                    break;
+                    throw new UsenetProtocolException(
+                        "The NNTP connection closed before the article body terminator was received.");
                 }
 
                 // Check for NNTP termination sequence (single dot)
@@ -135,7 +141,7 @@ public partial class UsenetClient
                 writer.Advance(written);
 
                 // Flush periodically to make data available for reading
-                var result = await RunWithTimeoutAsync(writer.FlushAsync, cancellationToken);
+                var result = await writer.FlushAsync(cancellationToken).ConfigureAwait(false);
                 if (result.IsCompleted || result.IsCanceled)
                 {
                     shouldWrite = false;
@@ -144,6 +150,7 @@ public partial class UsenetClient
         }
         catch (Exception e)
         {
+            failure = e;
             lock (this)
             {
                 _backgroundException = ExceptionDispatchInfo.Capture(e);
@@ -151,7 +158,18 @@ public partial class UsenetClient
         }
         finally
         {
-            onFinally.Invoke();
+            await writer.CompleteAsync(failure).ConfigureAwait(false);
+            operationCts.Dispose();
+            _commandLock.Release();
+            try
+            {
+                onConnectionReadyAgain?.Invoke(
+                    failure == null ? ArticleBodyResult.Retrieved : ArticleBodyResult.NotRetrieved);
+            }
+            catch
+            {
+                // User callbacks must not fault the unobserved background transfer task.
+            }
         }
     }
 }

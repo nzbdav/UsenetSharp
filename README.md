@@ -1,141 +1,183 @@
 # UsenetSharp
 
-A high-performance .NET library for Usenet NNTP protocol with yEnc support.
+UsenetSharp is a .NET 9 library for asynchronous, read-only NNTP access and
+streaming yEnc decoding.
 
 ## Features
 
-- Asynchronous NNTP client implementation
-- SSL/TLS support for secure connections
-- Authentication support
-- Article retrieval (ARTICLE, BODY, STAT commands)
-- yEnc decoding via RapidYencSharp integration
-- Thread-safe operations
-- High-performance streaming
+- Asynchronous NNTP connection, authentication, STAT, HEAD, BODY, ARTICLE, and DATE commands
+- TLS with platform certificate validation
+- Incremental, allocation-conscious yEnc decoding through RapidYencSharp
+- Read-only, non-seekable response streams with cancellation support
+- Serialized commands per connection; use multiple clients for parallel downloads
 
 ## Installation
 
-Install via NuGet:
+Packages are currently published to GitHub Packages, not nuget.org. GitHub's
+NuGet registry requires authentication, including for public packages. Create a
+personal access token with `read:packages`, then add the repository owner as a
+package source:
 
 ```bash
-dotnet add package UsenetSharp
+dotnet nuget add source \
+  "https://nuget.pkg.github.com/hoivikaj/index.json" \
+  --name github \
+  --username YOUR_GITHUB_USERNAME \
+  --password "$GITHUB_PACKAGES_TOKEN" \
+  --store-password-in-clear-text
+
+dotnet add package UsenetSharp --source github
 ```
+
+Avoid putting a token directly in a checked-in `NuGet.config`. See GitHub's
+[NuGet registry documentation](https://docs.github.com/packages/working-with-a-github-packages-registry/working-with-the-nuget-registry)
+for credential-storage options.
 
 ## Usage
 
-### Basic Connection and Authentication
+### Connect and authenticate
 
 ```csharp
 using UsenetSharp.Clients;
 
-var client = new UsenetClient();
+using var client = new UsenetClient();
 
-// Connect to Usenet server
-await client.ConnectAsync("news.example.com", 563, useSsl: true, cancellationToken);
+await client.ConnectAsync(
+    "news.example.com",
+    port: 563,
+    useSsl: true,
+    cancellationToken);
 
-// Authenticate
-await client.AuthenticateAsync("username", "password", cancellationToken);
+var authentication = await client.AuthenticateAsync(
+    "username",
+    "password",
+    cancellationToken);
+
+if (!authentication.Success)
+{
+    throw new InvalidOperationException(authentication.ResponseMessage);
+}
 ```
 
-### Retrieving Articles
+TLS uses the platform's normal certificate validation. Credentials sent with
+`useSsl: false` travel in plaintext; only use an unencrypted connection on a
+network you trust.
+
+### Retrieve an article body
+
+`SegmentId` accepts a message ID with or without angle brackets:
 
 ```csharp
-// Get article body
-var bodyResponse = await client.BodyAsync("article-id@example.com", cancellationToken);
-using (var stream = bodyResponse.Stream)
+using UsenetSharp.Models;
+
+SegmentId segmentId = "article-id@example.com";
+var response = await client.BodyAsync(segmentId, cancellationToken);
+
+if (!response.Success || response.Stream is null)
 {
-    // Process article body stream
+    Console.WriteLine(response.ResponseMessage);
+    return;
 }
 
-// Get full article (headers + body)
-var articleResponse = await client.ArticleAsync("article-id@example.com", cancellationToken);
-Console.WriteLine($"Headers: {articleResponse.Headers}");
-using (var stream = articleResponse.Stream)
-{
-    // Process article stream
-}
+await using var body = response.Stream;
+await body.CopyToAsync(destination, cancellationToken);
 ```
 
-### Checking Article Existence with STAT
+`ARTICLE` also exposes parsed headers:
 
 ```csharp
-// Check if an article exists (typically used for validation or inventory purposes)
-// Note: In most cases, you would directly call BodyAsync or ArticleAsync
-// rather than checking with STAT first
-var statResponse = await client.StatAsync("article-id@example.com", cancellationToken);
+var response = await client.ArticleAsync(segmentId, cancellationToken);
 
-if (statResponse.Exists)
+if (response.ArticleHeaders is not null)
 {
-    Console.WriteLine($"Article exists with response code: {statResponse.ResponseCode}");
+    Console.WriteLine(response.ArticleHeaders.Subject);
 }
-else
+
+if (response.Stream is not null)
 {
-    Console.WriteLine($"Article not found. Response code: {statResponse.ResponseCode}");
+    await using var article = response.Stream;
+    await article.CopyToAsync(destination, cancellationToken);
 }
 ```
 
-### Decoding yEnc Content with YencStream
+### Check article availability
+
+```csharp
+var response = await client.StatAsync(segmentId, cancellationToken);
+
+if (response.ArticleExists)
+{
+    Console.WriteLine($"Article is available ({response.ResponseCode}).");
+}
+```
+
+Calling `BODY` or `ARTICLE` directly is usually preferable to issuing a separate
+`STAT` request first.
+
+### Decode yEnc content
+
+`YencStream` owns and disposes the body stream passed to it by default. Pass
+`leaveOpen: true` when the caller must retain ownership:
 
 ```csharp
 using UsenetSharp.Streams;
 
-// Get article body that contains yEnc-encoded data
-using var bodyResponse = await client.BodyAsync("yenc-article-id@example.com", cancellationToken);
-
-// Wrap the body stream with YencStream for automatic decoding
-using var yencStream = new YencStream(bodyResponse.Stream);
-
-// Get yEnc headers (filename, size, part info, etc.)
-var yencHeaders = await yencStream.GetYencHeadersAsync(cancellationToken);
-if (yencHeaders != null)
+var response = await client.BodyAsync(segmentId, cancellationToken);
+if (response.Stream is null)
 {
-    Console.WriteLine($"File: {yencHeaders.FileName}");
-    Console.WriteLine($"Size: {yencHeaders.FileSize} bytes");
-    Console.WriteLine($"Part: {yencHeaders.PartNumber}/{yencHeaders.TotalParts}");
+    return;
 }
 
-// Process the decoded stream
-// The yencStream can be read from directly and will provide decoded binary data
+await using var yenc = new YencStream(response.Stream);
+var header = await yenc.GetYencHeadersAsync(cancellationToken);
+
+if (header is not null)
+{
+    Console.WriteLine($"{header.FileName}: {header.FileSize} bytes");
+}
+
+await yenc.CopyToAsync(destination, cancellationToken);
 ```
 
-### Server Date/Time
+### Connection and stream lifecycle
 
-```csharp
-var dateResponse = await client.DateAsync(cancellationToken);
-Console.WriteLine($"Server time: {dateResponse.DateTime}");
-```
+One `UsenetClient` owns one TCP/TLS connection. Commands on that connection are
+serialized. After a successful `BODY` or `ARTICLE`, the connection remains
+reserved until the NNTP body terminator is consumed or the transfer fails.
+Dispose response streams promptly, and call `WaitForReadyAsync` when you need to
+know that the connection can accept another command. Use a separate client per
+parallel download.
+
+The body streams are readable but not writable or seekable. Dispose the client
+after all active response streams have finished.
 
 ## Requirements
 
-- .NET 9.0 or later
-- RapidYencSharp package (automatically installed as dependency)
+- .NET 9 SDK to build the repository
+- .NET 9 runtime to consume the current package
+- RapidYencSharp includes native binaries for Windows x64, Linux x64, and Linux
+  ARM64. Other platforms, including macOS, must build `rapidyenc` and place its
+  native library beside the application before using `YencStream`.
 
-## Running Tests
+## Development and testing
 
-Before running the unit tests, you need to update the credentials in `UsenetSharpTest/Credentials.cs` with your Usenet server details:
-
-```csharp
-public static class Credentials
-{
-    public const string Host = "news.example.com";
-    public const string Username = "your-username";
-    public const string Password = "your-password";
-}
-```
-
-Once configured, run the tests using:
+Deterministic tests use local scripted NNTP servers and need no network access
+or credentials:
 
 ```bash
-dotnet test
+dotnet restore --locked-mode
+dotnet build --configuration Release --no-restore
+dotnet test --configuration Release --no-build --filter "TestCategory!=Integration"
+dotnet pack UsenetSharp/UsenetSharp.csproj --configuration Release --no-build
 ```
+
+Live-server tests are marked `Integration` and are excluded from CI. Set
+`USENETSHARP_TEST_HOST`, `USENETSHARP_TEST_USERNAME`, and
+`USENETSHARP_TEST_PASSWORD` to run them locally; never commit credentials.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow and
+[SECURITY.md](SECURITY.md) for private vulnerability reporting.
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-## Repository
-
-https://github.com/nzbdav-dev/UsenetSharp
+Licensed under the [MIT License](LICENSE).

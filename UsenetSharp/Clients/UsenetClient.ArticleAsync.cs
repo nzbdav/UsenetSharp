@@ -19,9 +19,11 @@ public partial class UsenetClient
         CancellationToken cancellationToken
     )
     {
+        ThrowIfDisposed();
+        var validatedSegmentId = ValidateSegmentId(segmentId);
         try
         {
-            await _commandLock.WaitAsync(cancellationToken);
+            await _commandLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         }
         catch
         {
@@ -30,37 +32,35 @@ public partial class UsenetClient
         }
 
         var isReadBodyToPipeAsyncStarted = false;
+        CancellationTokenSource? operationCts = null;
 
         try
         {
+            ThrowIfDisposed();
             ThrowIfUnhealthy();
             ThrowIfNotConnected();
+            operationCts = CreateOperationTokenSource(cancellationToken);
 
             // Send ARTICLE command with message-id
-            await WriteLineAsync($"ARTICLE <{segmentId}>".AsMemory(), _cts.Token);
-            var response = await ReadLineAsync(_cts.Token);
+            await WriteLineAsync($"ARTICLE <{validatedSegmentId}>".AsMemory(), operationCts.Token).ConfigureAwait(false);
+            var response = await ReadLineAsync(operationCts.Token).ConfigureAwait(false);
             var responseCode = ParseResponseCode(response);
 
             // Article retrieved - head and body follow
             if (responseCode == (int)UsenetResponseType.ArticleRetrievedHeadAndBodyFollow)
             {
                 // Parse headers
-                var headers = await ParseArticleHeadersAsync(_cts.Token);
+                var headers = await ParseArticleHeadersAsync(operationCts.Token).ConfigureAwait(false);
 
                 // Create a pipe for streaming the body data
                 var pipe = new Pipe(new PipeOptions(
-                    pauseWriterThreshold: long.MaxValue,
-                    resumeWriterThreshold: long.MaxValue - 1
-                ));
+                    pauseWriterThreshold: 1024 * 1024,
+                    resumeWriterThreshold: 512 * 1024));
 
                 // Start background task to read the body and write to pipe
                 isReadBodyToPipeAsyncStarted = true;
-                _ = ReadBodyToPipeAsync(pipe.Writer, _cts.Token, () =>
-                {
-                    pipe.Writer.Complete();
-                    _commandLock.Release();
-                    onConnectionReadyAgain?.Invoke(ArticleBodyResult.Retrieved);
-                });
+                _ = ReadBodyToPipeAsync(pipe.Writer, operationCts, onConnectionReadyAgain);
+                operationCts = null;
 
                 // Return immediately with the stream and headers
                 return new UsenetArticleResponse
@@ -86,21 +86,26 @@ public partial class UsenetClient
         {
             if (!isReadBodyToPipeAsyncStarted)
             {
+                operationCts?.Dispose();
                 _commandLock.Release();
                 onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved);
             }
         }
     }
 
-    private async Task<UsenetArticleHeader> ParseArticleHeadersAsync(CancellationToken cancellationToken)
+    private async Task<UsenetArticleHeader> ParseArticleHeadersAsync(
+        CancellationToken cancellationToken,
+        bool allowDotTerminator = false)
     {
         var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         string? currentHeaderName = null;
         var currentHeaderValue = new StringBuilder();
+        var totalHeaderBytes = 0;
+        var headerCount = 0;
 
-        while (!cancellationToken.IsCancellationRequested)
+        while (true)
         {
-            var line = await ReadLineAsync(cancellationToken);
+            var line = await ReadLineAsync(cancellationToken).ConfigureAwait(false);
 
             if (line == null)
             {
@@ -108,7 +113,23 @@ public partial class UsenetClient
             }
 
             // Empty line signals end of headers
-            if (string.IsNullOrEmpty(line) || line == ".")
+            if (line == ".")
+            {
+                if (allowDotTerminator)
+                {
+                    if (currentHeaderName != null)
+                    {
+                        headers[currentHeaderName] = currentHeaderValue.ToString().Trim();
+                    }
+
+                    break;
+                }
+
+                throw new UsenetProtocolException(
+                    "Invalid NNTP response: article headers were not followed by a blank line.");
+            }
+
+            if (string.IsNullOrEmpty(line))
             {
                 // Save the last header if any
                 if (currentHeaderName != null)
@@ -117,6 +138,12 @@ public partial class UsenetClient
                 }
 
                 break;
+            }
+
+            totalHeaderBytes += Encoding.Latin1.GetByteCount(line) + 2;
+            if (totalHeaderBytes > 256 * 1024)
+            {
+                throw new UsenetProtocolException("NNTP article headers exceeded the 256 KiB limit.");
             }
 
             // Check if this is a continuation line (starts with whitespace)
@@ -141,6 +168,12 @@ public partial class UsenetClient
                 var colonIndex = line.IndexOf(':');
                 if (colonIndex > 0)
                 {
+                    headerCount++;
+                    if (headerCount > 256)
+                    {
+                        throw new UsenetProtocolException("NNTP article contained more than 256 headers.");
+                    }
+
                     currentHeaderName = line.Substring(0, colonIndex).Trim();
                     currentHeaderValue.Clear();
 
