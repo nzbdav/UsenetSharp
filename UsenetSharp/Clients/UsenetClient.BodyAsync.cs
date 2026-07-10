@@ -1,6 +1,5 @@
 using System.IO.Pipelines;
 using System.Runtime.ExceptionServices;
-using System.Text;
 using UsenetSharp.Exceptions;
 using UsenetSharp.Models;
 
@@ -108,16 +107,27 @@ public partial class UsenetClient
             // Read lines until we encounter the termination sequence (single dot on a line)
             while (true)
             {
-                var line = await ReadLineAsync(cancellationToken).ConfigureAwait(false);
-
-                if (line == null)
+                ReadOnlyMemory<byte>? lineMemory;
+                try
+                {
+                    lineMemory = await ReadLineBytesAsync(cancellationToken).ConfigureAwait(false);
+                }
+                catch (IOException)
                 {
                     throw new UsenetProtocolException(
                         "The NNTP connection closed before the article body terminator was received.");
                 }
 
+                if (!lineMemory.HasValue)
+                {
+                    throw new UsenetProtocolException(
+                        "The NNTP connection closed before the article body terminator was received.");
+                }
+
+                var line = lineMemory.Value.Span;
+
                 // Check for NNTP termination sequence (single dot)
-                if (line == ".")
+                if (line.Length == 1 && line[0] == (byte)'.')
                 {
                     break;
                 }
@@ -125,20 +135,17 @@ public partial class UsenetClient
                 if (!shouldWrite) continue;
 
                 // NNTP escaping: Lines starting with ".." should have the first dot removed
-                // Use ReadOnlySpan to avoid string allocation from Substring
-                ReadOnlySpan<char> lineSpan = line.AsSpan();
-                if (lineSpan.Length >= 2 && lineSpan[0] == '.' && lineSpan[1] == '.')
+                if (line.Length >= 2 && line[0] == (byte)'.' && line[1] == (byte)'.')
                 {
-                    lineSpan = lineSpan.Slice(1);
+                    line = line[1..];
                 }
 
-                // Write the line to the pipe using Latin1 to preserve byte values 0-255
-                var byteCount = Encoding.Latin1.GetByteCount(lineSpan) + 2; // +2 for CRLF
-                var span = writer.GetSpan(byteCount);
-                var written = Encoding.Latin1.GetBytes(lineSpan, span);
-                span[written++] = (byte)'\r';
-                span[written++] = (byte)'\n';
-                writer.Advance(written);
+                // Copy protocol bytes directly so yEnc data never round-trips through UTF-16.
+                var destination = writer.GetSpan(line.Length + 2);
+                line.CopyTo(destination);
+                destination[line.Length] = (byte)'\r';
+                destination[line.Length + 1] = (byte)'\n';
+                writer.Advance(line.Length + 2);
 
                 // Flush periodically to make data available for reading
                 var result = await writer.FlushAsync(cancellationToken).ConfigureAwait(false);

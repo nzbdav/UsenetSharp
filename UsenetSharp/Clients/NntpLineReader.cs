@@ -8,14 +8,21 @@ internal sealed class NntpLineReader(Stream stream, int maximumLineLength = 64 *
 {
     private const int BufferSize = 8192;
     private readonly byte[] _buffer = ArrayPool<byte>.Shared.Rent(BufferSize);
+    private byte[]? _lineBuffer;
     private int _position;
     private int _length;
     private bool _disposed;
 
     public async ValueTask<string?> ReadLineAsync(CancellationToken cancellationToken)
     {
+        var line = await ReadLineBytesAsync(cancellationToken).ConfigureAwait(false);
+        return line.HasValue ? Encoding.Latin1.GetString(line.Value.Span) : null;
+    }
+
+    public async ValueTask<ReadOnlyMemory<byte>?> ReadLineBytesAsync(CancellationToken cancellationToken)
+    {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        using var line = new MemoryStream();
+        var assembledLength = 0;
 
         while (true)
         {
@@ -26,7 +33,9 @@ internal sealed class NntpLineReader(Stream stream, int maximumLineLength = 64 *
                     .ConfigureAwait(false);
                 if (_length == 0)
                 {
-                    return line.Length == 0 ? null : DecodeLine(line);
+                    return assembledLength == 0
+                        ? null
+                        : TrimCarriageReturn(_lineBuffer.AsMemory(0, assembledLength));
                 }
             }
 
@@ -34,32 +43,59 @@ internal sealed class NntpLineReader(Stream stream, int maximumLineLength = 64 *
             var newlineIndex = available.IndexOf((byte)'\n');
             var count = newlineIndex >= 0 ? newlineIndex : available.Length;
 
-            if (line.Length + count > maximumLineLength)
+            if (assembledLength + count > maximumLineLength)
             {
                 throw new UsenetProtocolException(
                     $"NNTP response line exceeded the {maximumLineLength}-byte limit.");
             }
 
-            line.Write(available[..count]);
-            _position += count;
-
             if (newlineIndex >= 0)
             {
-                _position++;
-                return DecodeLine(line);
+                var lineStart = _position;
+                _position += count + 1;
+
+                if (assembledLength == 0)
+                {
+                    return TrimCarriageReturn(_buffer.AsMemory(lineStart, count));
+                }
+
+                EnsureLineBufferCapacity(assembledLength + count);
+                available[..count].CopyTo(_lineBuffer.AsSpan(assembledLength));
+                return TrimCarriageReturn(_lineBuffer.AsMemory(0, assembledLength + count));
             }
+
+            EnsureLineBufferCapacity(assembledLength + count);
+            available[..count].CopyTo(_lineBuffer.AsSpan(assembledLength));
+            assembledLength += count;
+            _position += count;
         }
     }
 
-    private static string DecodeLine(MemoryStream line)
+    private static ReadOnlyMemory<byte> TrimCarriageReturn(ReadOnlyMemory<byte> line)
     {
-        var bytes = line.GetBuffer().AsSpan(0, checked((int)line.Length));
-        if (!bytes.IsEmpty && bytes[^1] == (byte)'\r')
+        if (!line.IsEmpty && line.Span[^1] == (byte)'\r')
         {
-            bytes = bytes[..^1];
+            return line[..^1];
         }
 
-        return Encoding.Latin1.GetString(bytes);
+        return line;
+    }
+
+    private void EnsureLineBufferCapacity(int requiredLength)
+    {
+        if (_lineBuffer is { Length: var length } && length >= requiredLength)
+        {
+            return;
+        }
+
+        var replacement = ArrayPool<byte>.Shared.Rent(
+            Math.Min(maximumLineLength, Math.Max(requiredLength, _lineBuffer?.Length * 2 ?? BufferSize)));
+        if (_lineBuffer != null)
+        {
+            ArrayPool<byte>.Shared.Return(_lineBuffer);
+        }
+
+        _lineBuffer = replacement;
     }
 
     public void Dispose()
@@ -71,5 +107,10 @@ internal sealed class NntpLineReader(Stream stream, int maximumLineLength = 64 *
 
         _disposed = true;
         ArrayPool<byte>.Shared.Return(_buffer);
+        if (_lineBuffer != null)
+        {
+            ArrayPool<byte>.Shared.Return(_lineBuffer);
+            _lineBuffer = null;
+        }
     }
 }

@@ -130,6 +130,19 @@ public partial class UsenetClient
         }
     }
 
+    private async ValueTask<ReadOnlyMemory<byte>?> ReadLineBytesAsync(CancellationToken ct)
+    {
+        using var cts = CreateCtsWithTimeout(ct);
+        try
+        {
+            return await _reader!.ReadLineBytesAsync(cts.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cts.Token.IsCancellationRequested && !ct.IsCancellationRequested)
+        {
+            throw new TimeoutException("Timeout reading from NNTP stream.");
+        }
+    }
+
     private async ValueTask<T> RunWithTimeoutAsync<T>(Func<CancellationToken, ValueTask<T>> func, CancellationToken ct)
     {
         using var cts = CreateCtsWithTimeout(ct);

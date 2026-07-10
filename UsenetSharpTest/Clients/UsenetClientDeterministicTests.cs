@@ -90,6 +90,22 @@ public class UsenetClientDeterministicTests
     }
 
     [Test]
+    public async Task BodyAsync_PreservesLatin1BytesWithoutTranscoding()
+    {
+        var bodyCharacters = new[] { '\0', '\x01', '\x7f', '\x80', '\xff' };
+        await using var server = new ScriptedNntpServer(async (_, writer, _) =>
+            await writer.WriteAsync($"222 body follows\r\n{new string(bodyCharacters)}\r\n.\r\n"));
+        await using var client = new UsenetClient();
+        await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
+
+        var response = await client.BodyAsync("article@example.com", CancellationToken.None);
+        using var body = new MemoryStream();
+        await response.Stream!.CopyToAsync(body);
+
+        Assert.That(body.ToArray(), Is.EqualTo(new byte[] { 0x00, 0x01, 0x7f, 0x80, 0xff, 0x0d, 0x0a }));
+    }
+
+    [Test]
     public async Task BodyAsync_TruncatedTransferFailsStreamAndReportsNotRetrieved()
     {
         await using var server = new ScriptedNntpServer(async (_, writer, _) =>
