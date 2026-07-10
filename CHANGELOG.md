@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.1.0](https://github.com/nzbdav/UsenetSharp/compare/v1.0.8...v1.1.0) (2026-07-10)
+
+
+### Features
+
+* **yenc:** add optional decoded body CRC32 validation ([3a4d1ce](https://github.com/nzbdav/UsenetSharp/commit/3a4d1ce5a5cefba9dd539dddf10f8fcefdb26520))
+* **yenc:** decode article bodies in raw chunks ([0f90585](https://github.com/nzbdav/UsenetSharp/commit/0f90585872c7b585368e3a19814eabcbf7c8051c))
+
+
+### Bug Fixes
+
+* **nntp:** coalesce article body read timeouts ([0f456c3](https://github.com/nzbdav/UsenetSharp/commit/0f456c3c2f6fc5d46faec9654e045271f311d50e))
+* **nntp:** read article data in 64 KiB chunks ([3320dc3](https://github.com/nzbdav/UsenetSharp/commit/3320dc3df5b3cfd0e693bafc18634d51464c7535))
+
 ## [1.0.8](https://github.com/nzbdav/UsenetSharp/compare/v1.0.7...v1.0.8) (2026-07-10)
 
 
