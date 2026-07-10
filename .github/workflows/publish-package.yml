@@ -1,6 +1,18 @@
 name: Publish Package
 
 on:
+  workflow_call:
+    inputs:
+      tag_name:
+        description: Release tag to publish
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: Existing release tag to publish
+        required: true
+        type: string
   release:
     types:
       - published
@@ -12,13 +24,14 @@ permissions:
   id-token: write
 
 concurrency:
-  group: publish-${{ github.event.release.tag_name }}
+  group: publish-${{ inputs.tag_name || github.event.release.tag_name }}
   cancel-in-progress: false
 
 env:
   DOTNET_CLI_TELEMETRY_OPTOUT: 1
   DOTNET_NOLOGO: true
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 1
+  RELEASE_TAG: ${{ inputs.tag_name || github.event.release.tag_name }}
 
 jobs:
   publish:
@@ -28,7 +41,7 @@ jobs:
       - name: Check out release tag
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Set up .NET
         uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
@@ -39,7 +52,7 @@ jobs:
         shell: bash
         run: |
           version="$(dotnet msbuild UsenetSharp/UsenetSharp.csproj -getProperty:Version)"
-          test "${{ github.event.release.tag_name }}" = "v${version}"
+          test "${RELEASE_TAG}" = "v${version}"
 
       - name: Restore locked dependencies
         run: dotnet restore UsenetSharp.sln --locked-mode
@@ -82,7 +95,7 @@ jobs:
       - name: Upload release packages
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: packages-${{ github.event.release.tag_name }}
+          name: packages-${{ env.RELEASE_TAG }}
           path: artifacts/*
           if-no-files-found: error
           retention-days: 30
