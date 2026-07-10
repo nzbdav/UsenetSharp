@@ -46,6 +46,13 @@ dotnet pack UsenetSharp/UsenetSharp.csproj --configuration Release --no-build
 - `release-please-config.json` updates the version in `UsenetSharp/UsenetSharp.csproj`.
 - Release artifacts must be built from the release tag only after restore, build, deterministic tests, and package validation succeed.
 
+## Commit convention
+- Use scoped Conventional Commits: `feat(scope):`, `fix(scope):`, or `chore(scope):`.
+- Choose a concise scope such as `client`, `nntp`, `yenc`, `ci`, `deps`, or `docs`.
+- Release Please uses commit types for release notes and versions: `feat` triggers a minor release, `fix` triggers a patch release, and `chore` does not trigger a release.
+- Mark breaking changes with `!` (for example, `feat(client)!:`) and include a `BREAKING CHANGE:` footer.
+- Keep unrelated changes in separate commits so each release-note entry describes one coherent change.
+
 ## Start here
 Read `README.md`, `Clients/IUsenetClient.cs`, `Clients/UsenetClient.BodyAsync.cs`,
 `Clients/UsenetClient.Helpers.cs`, `Streams/YencStream.cs`, and both project files before changing behavior.
