@@ -59,7 +59,8 @@ public partial class UsenetClient
 
                 // Start background task to read the body and write to pipe
                 isReadBodyToPipeAsyncStarted = true;
-                _ = ReadBodyToPipeAsync(pipe.Writer, operationCts, onConnectionReadyAgain);
+                _ = ReadBodyToPipeAsync(
+                    pipe.Writer, operationCts, cancellationToken, onConnectionReadyAgain);
                 operationCts = null;
 
                 // Return immediately with the stream and headers

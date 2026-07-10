@@ -165,6 +165,78 @@ public class UsenetClientDeterministicTests
     }
 
     [Test]
+    public async Task BodyAsync_AbandonedBodyBeyondDrainLimitReportsNotRetrieved()
+    {
+        var continueBody = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var server = new ScriptedNntpServer(async (_, writer, _) =>
+        {
+            await writer.WriteAsync("222 body follows\r\ninitial\r\n");
+            await continueBody.Task;
+            await writer.WriteAsync("after-dispose\r\n12345\r\n.\r\n");
+        });
+        await using var client = new UsenetClient(new UsenetClientOptions
+        {
+            AbandonedBodyDrainLimit = 4
+        });
+        await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
+        var completion = new TaskCompletionSource<ArticleBodyResult>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var response = await client.BodyAsync(
+            "article@example.com", completion.SetResult, CancellationToken.None);
+        await response.Stream!.DisposeAsync();
+        continueBody.SetResult();
+
+        Assert.That(await completion.Task.WaitAsync(TimeSpan.FromSeconds(2)),
+            Is.EqualTo(ArticleBodyResult.NotRetrieved));
+        Assert.ThrowsAsync<UsenetProtocolException>(() =>
+            client.DateAsync(CancellationToken.None));
+    }
+
+    [Test]
+    public async Task BodyAsync_CallerCancellationDrainsAndReusesConnection()
+    {
+        var firstLineSent = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var continueBody = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var server = new ScriptedNntpServer(async (command, writer, _) =>
+        {
+            if (command.StartsWith("BODY", StringComparison.Ordinal))
+            {
+                await writer.WriteAsync("222 body follows\r\nfirst\r\n");
+                firstLineSent.SetResult();
+                await continueBody.Task;
+                await writer.WriteAsync("second\r\n.\r\n");
+            }
+            else if (command == "DATE")
+            {
+                await writer.WriteLineAsync("111 20260709213000");
+            }
+        });
+        await using var client = new UsenetClient(new UsenetClientOptions
+        {
+            ReadTimeout = TimeSpan.FromSeconds(1),
+            AbandonedBodyDrainLimit = 1024
+        });
+        await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
+        using var cts = new CancellationTokenSource();
+        var completion = new TaskCompletionSource<ArticleBodyResult>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var response = await client.BodyAsync("article@example.com", completion.SetResult, cts.Token);
+        var copyTask = response.Stream!.CopyToAsync(Stream.Null);
+        await firstLineSent.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await Task.Delay(50);
+        cts.Cancel();
+        continueBody.SetResult();
+
+        Assert.ThrowsAsync<OperationCanceledException>(async () => await copyTask);
+        Assert.That(await completion.Task.WaitAsync(TimeSpan.FromSeconds(2)),
+            Is.EqualTo(ArticleBodyResult.NotRetrieved));
+        var date = await client.DateAsync(CancellationToken.None);
+        Assert.That(date.ResponseCode, Is.EqualTo((int)UsenetResponseType.DateAndTime));
+    }
+
+    [Test]
     public async Task OversizedResponseLine_IsRejected()
     {
         await using var server = new ScriptedNntpServer(async (_, writer, _) =>

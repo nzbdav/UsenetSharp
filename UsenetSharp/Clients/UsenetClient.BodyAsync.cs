@@ -56,7 +56,8 @@ public partial class UsenetClient
 
                 // Start background task to read the body and write to pipe
                 isReadBodyToPipeAsyncStarted = true;
-                _ = ReadBodyToPipeAsync(pipe.Writer, operationCts, onConnectionReadyAgain);
+                _ = ReadBodyToPipeAsync(
+                    pipe.Writer, operationCts, cancellationToken, onConnectionReadyAgain);
                 operationCts = null;
 
                 // Return immediately with the stream and headers
@@ -91,6 +92,7 @@ public partial class UsenetClient
     private async Task ReadBodyToPipeAsync(
         PipeWriter writer,
         CancellationTokenSource operationCts,
+        CancellationToken callerCancellationToken,
         Action<ArticleBodyResult>? onConnectionReadyAgain)
     {
         Exception? failure = null;
@@ -102,6 +104,7 @@ public partial class UsenetClient
             }
 
             var shouldWrite = true;
+            long drainedBytes = 0;
             var cancellationToken = operationCts.Token;
             using var readTimeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
@@ -133,7 +136,17 @@ public partial class UsenetClient
                     break;
                 }
 
-                if (!shouldWrite) continue;
+                if (!shouldWrite)
+                {
+                    drainedBytes += line.Length + 2;
+                    if (drainedBytes > _options.AbandonedBodyDrainLimit)
+                    {
+                        throw new UsenetProtocolException(
+                            "The abandoned NNTP body exceeded the configured drain limit.");
+                    }
+
+                    continue;
+                }
 
                 // NNTP escaping: Lines starting with ".." should have the first dot removed
                 if (line.Length >= 2 && line[0] == (byte)'.' && line[1] == (byte)'.')
@@ -156,13 +169,19 @@ public partial class UsenetClient
                 }
             }
         }
+        catch (OperationCanceledException e) when (callerCancellationToken.IsCancellationRequested)
+        {
+            failure = e;
+            var drainFailure = await TryDrainBodyAsync().ConfigureAwait(false);
+            if (drainFailure != null)
+            {
+                RecordBackgroundFailure(drainFailure);
+            }
+        }
         catch (Exception e)
         {
             failure = e;
-            lock (_stateLock)
-            {
-                _backgroundException = ExceptionDispatchInfo.Capture(e);
-            }
+            RecordBackgroundFailure(e);
         }
         finally
         {
@@ -178,6 +197,61 @@ public partial class UsenetClient
             {
                 // User callbacks must not fault the unobserved background transfer task.
             }
+        }
+    }
+
+    private async Task<Exception?> TryDrainBodyAsync()
+    {
+        try
+        {
+            using var drainCts = CreateOperationTokenSource(CancellationToken.None);
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(drainCts.Token);
+            long drainedBytes = 0;
+
+            while (true)
+            {
+                ReadOnlyMemory<byte>? line;
+                try
+                {
+                    line = await ReadLineBytesAsync(timeoutCts, drainCts.Token).ConfigureAwait(false);
+                }
+                catch (IOException)
+                {
+                    return new UsenetProtocolException(
+                        "The NNTP connection closed while draining a cancelled body.");
+                }
+
+                if (!line.HasValue)
+                {
+                    return new UsenetProtocolException(
+                        "The NNTP connection closed while draining a cancelled body.");
+                }
+
+                var bytes = line.Value.Span;
+                if (bytes.Length == 1 && bytes[0] == (byte)'.')
+                {
+                    return null;
+                }
+
+                drainedBytes += bytes.Length + 2;
+                if (drainedBytes > _options.AbandonedBodyDrainLimit)
+                {
+                    return new UsenetProtocolException(
+                        "The cancelled NNTP body exceeded the configured drain limit.");
+                }
+            }
+        }
+        catch (Exception e)
+        {
+            return e;
+        }
+    }
+
+    private void RecordBackgroundFailure(Exception failure)
+    {
+        lock (_stateLock)
+        {
+            _backgroundException = ExceptionDispatchInfo.Capture(failure);
         }
     }
 }

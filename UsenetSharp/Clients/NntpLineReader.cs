@@ -9,6 +9,7 @@ internal sealed class NntpLineReader(Stream stream, int maximumLineLength = 64 *
     private const int BufferSize = 8192;
     private readonly byte[] _buffer = ArrayPool<byte>.Shared.Rent(BufferSize);
     private byte[]? _lineBuffer;
+    private int _lineBufferLength;
     private int _position;
     private int _length;
     private bool _disposed;
@@ -22,7 +23,6 @@ internal sealed class NntpLineReader(Stream stream, int maximumLineLength = 64 *
     public async ValueTask<ReadOnlyMemory<byte>?> ReadLineBytesAsync(CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        var assembledLength = 0;
 
         while (true)
         {
@@ -33,9 +33,14 @@ internal sealed class NntpLineReader(Stream stream, int maximumLineLength = 64 *
                     .ConfigureAwait(false);
                 if (_length == 0)
                 {
-                    return assembledLength == 0
-                        ? null
-                        : TrimCarriageReturn(_lineBuffer.AsMemory(0, assembledLength));
+                    if (_lineBufferLength == 0)
+                    {
+                        return null;
+                    }
+
+                    var partialLine = TrimCarriageReturn(_lineBuffer.AsMemory(0, _lineBufferLength));
+                    _lineBufferLength = 0;
+                    return partialLine;
                 }
             }
 
@@ -43,7 +48,7 @@ internal sealed class NntpLineReader(Stream stream, int maximumLineLength = 64 *
             var newlineIndex = available.IndexOf((byte)'\n');
             var count = newlineIndex >= 0 ? newlineIndex : available.Length;
 
-            if (assembledLength + count > maximumLineLength)
+            if (_lineBufferLength + count > maximumLineLength)
             {
                 throw new UsenetProtocolException(
                     $"NNTP response line exceeded the {maximumLineLength}-byte limit.");
@@ -54,19 +59,22 @@ internal sealed class NntpLineReader(Stream stream, int maximumLineLength = 64 *
                 var lineStart = _position;
                 _position += count + 1;
 
-                if (assembledLength == 0)
+                if (_lineBufferLength == 0)
                 {
                     return TrimCarriageReturn(_buffer.AsMemory(lineStart, count));
                 }
 
-                EnsureLineBufferCapacity(assembledLength + count);
-                available[..count].CopyTo(_lineBuffer.AsSpan(assembledLength));
-                return TrimCarriageReturn(_lineBuffer.AsMemory(0, assembledLength + count));
+                EnsureLineBufferCapacity(_lineBufferLength + count);
+                available[..count].CopyTo(_lineBuffer.AsSpan(_lineBufferLength));
+                var assembledLine = TrimCarriageReturn(
+                    _lineBuffer.AsMemory(0, _lineBufferLength + count));
+                _lineBufferLength = 0;
+                return assembledLine;
             }
 
-            EnsureLineBufferCapacity(assembledLength + count);
-            available[..count].CopyTo(_lineBuffer.AsSpan(assembledLength));
-            assembledLength += count;
+            EnsureLineBufferCapacity(_lineBufferLength + count);
+            available[..count].CopyTo(_lineBuffer.AsSpan(_lineBufferLength));
+            _lineBufferLength += count;
             _position += count;
         }
     }
