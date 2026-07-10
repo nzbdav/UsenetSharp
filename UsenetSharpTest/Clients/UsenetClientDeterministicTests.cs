@@ -621,7 +621,7 @@ public class UsenetClientDeterministicTests
         cts.Cancel();
         closeConnection.SetResult();
 
-        Assert.ThrowsAsync<OperationCanceledException>(async () => await copyTask);
+        Assert.CatchAsync<OperationCanceledException>(async () => await copyTask);
         Assert.That(await completion.Task.WaitAsync(TimeSpan.FromSeconds(2)),
             Is.EqualTo(ArticleBodyResult.NotRetrieved));
         Assert.That(client.IsHealthy, Is.False);
