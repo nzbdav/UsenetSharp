@@ -58,7 +58,7 @@ public partial class UsenetClient
 
     private void ThrowIfDisposed()
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposeState) != 0, this);
     }
 
     private void ThrowIfUnhealthy()

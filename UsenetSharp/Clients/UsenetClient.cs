@@ -2,7 +2,7 @@ namespace UsenetSharp.Clients;
 
 public partial class UsenetClient : IUsenetClient, IDisposable, IAsyncDisposable
 {
-    private volatile bool _disposed;
+    private int _disposeState;
 
     public async Task WaitForReadyAsync(CancellationToken cancellationToken = default)
     {
@@ -20,12 +20,11 @@ public partial class UsenetClient : IUsenetClient, IDisposable, IAsyncDisposable
 
     public void Dispose()
     {
-        if (_disposed)
+        if (Interlocked.Exchange(ref _disposeState, 1) != 0)
         {
             return;
         }
 
-        _disposed = true;
         CancelConnectionLifetime();
         _commandLock.WaitAsync().GetAwaiter().GetResult();
         CleanupConnection(createNewLifetime: false);
@@ -37,12 +36,11 @@ public partial class UsenetClient : IUsenetClient, IDisposable, IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        if (_disposed)
+        if (Interlocked.Exchange(ref _disposeState, 1) != 0)
         {
             return;
         }
 
-        _disposed = true;
         CancelConnectionLifetime();
         await _commandLock.WaitAsync().ConfigureAwait(false);
         CleanupConnection(createNewLifetime: false);

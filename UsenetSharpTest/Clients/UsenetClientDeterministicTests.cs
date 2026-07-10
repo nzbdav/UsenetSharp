@@ -170,6 +170,19 @@ public class UsenetClientDeterministicTests
     }
 
     [Test]
+    public async Task ConcurrentDisposeAndDisposeAsync_AreSingleShot()
+    {
+        var client = new UsenetClient();
+
+        await Task.WhenAll(
+            Task.Run(client.Dispose),
+            client.DisposeAsync().AsTask(),
+            Task.Run(client.Dispose));
+
+        Assert.ThrowsAsync<ObjectDisposedException>(() => client.DateAsync(CancellationToken.None));
+    }
+
+    [Test]
     public async Task Reconnect_WaitsForActiveBodyToFinish()
     {
         var finishBody = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
