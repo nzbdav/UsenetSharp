@@ -33,6 +33,36 @@ public interface IUsenetClient
         SegmentId segmentId, Action<ArticleBodyResult>? onConnectionReadyAgain,
         CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Pipelines decoded BODY commands and returns their ordered response tasks.
+    /// </summary>
+    /// <remarks>
+    /// Consume or dispose each response stream before awaiting the next response. Later responses
+    /// remain blocked by bounded backpressure until earlier streams are drained.
+    /// </remarks>
+    Task<UsenetDecodedBodyBatch> DecodedBodiesAsync(
+        IReadOnlyList<SegmentId> segmentIds, CancellationToken cancellationToken)
+    {
+        return DecodedBodiesAsync(segmentIds, null, cancellationToken);
+    }
+
+    /// <summary>
+    /// Pipelines decoded BODY commands and reports when the complete batch releases the connection.
+    /// </summary>
+    /// <remarks>
+    /// Consume or dispose each response stream before awaiting the next response. Later responses
+    /// remain blocked by bounded backpressure until earlier streams are drained. The completion
+    /// callback distinguishes clean not-found and drained-cancellation outcomes from failures that
+    /// make the connection unsafe to reuse.
+    /// </remarks>
+    Task<UsenetDecodedBodyBatch> DecodedBodiesAsync(
+        IReadOnlyList<SegmentId> segmentIds, Action<ArticleBodyResult>? onConnectionReadyAgain,
+        CancellationToken cancellationToken)
+    {
+        throw new NotSupportedException(
+            $"{GetType().Name} does not support pipelined decoded BODY commands.");
+    }
+
     Task<UsenetArticleResponse> ArticleAsync(
         SegmentId segmentId, CancellationToken cancellationToken);
 

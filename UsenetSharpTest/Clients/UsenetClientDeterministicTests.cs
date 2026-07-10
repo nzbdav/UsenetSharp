@@ -380,6 +380,210 @@ public class UsenetClientDeterministicTests
     }
 
     [Test]
+    public async Task DecodedBodiesAsync_SendsCommandsAheadAndStreamsResponsesInOrder()
+    {
+        var expected = new[]
+        {
+            Array.Empty<byte>(),
+            Array.Empty<byte>()
+        };
+        var commandsReceived = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var server = ScriptedNntpServer.StartConnectionScript(
+            async (reader, writer, cancellationToken) =>
+            {
+                Assert.That(
+                    await reader.ReadLineAsync(cancellationToken),
+                    Is.EqualTo("BODY <first@example.com>"));
+                Assert.That(
+                    await reader.ReadLineAsync(cancellationToken),
+                    Is.EqualTo("BODY <second@example.com>"));
+                commandsReceived.SetResult();
+
+                await WriteSimpleYencArticleAsync(
+                    writer, expected[0], $"size={expected[0].Length}", "first.bin");
+                await WriteSimpleYencArticleAsync(
+                    writer, expected[1], $"size={expected[1].Length}", "second.bin");
+
+                Assert.That(
+                    await reader.ReadLineAsync(cancellationToken),
+                    Is.EqualTo("DATE"));
+                await writer.WriteLineAsync("111 20260709213000");
+            });
+        await using var client = new UsenetClient();
+        await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
+        var callbackCount = 0;
+        var completion = new TaskCompletionSource<ArticleBodyResult>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var batch = await client.DecodedBodiesAsync(
+            new SegmentId[] { "first@example.com", "second@example.com" },
+            result =>
+            {
+                Interlocked.Increment(ref callbackCount);
+                completion.TrySetResult(result);
+            },
+            CancellationToken.None);
+        await commandsReceived.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        for (var index = 0; index < batch.Responses.Count; index++)
+        {
+            var response = await batch.Responses[index];
+            Assert.That(response.SegmentId, Is.EqualTo(
+                index == 0 ? "first@example.com" : "second@example.com"));
+            var headers = await response.Stream!.GetYencHeadersAsync();
+            Assert.That(headers!.FileName, Is.EqualTo(
+                index == 0 ? "first.bin" : "second.bin"));
+            using var decoded = new MemoryStream();
+            await response.Stream.CopyToAsync(decoded);
+            Assert.That(decoded.ToArray(), Is.EqualTo(expected[index]));
+        }
+
+        Assert.That(await completion.Task.WaitAsync(TimeSpan.FromSeconds(2)),
+            Is.EqualTo(ArticleBodyResult.Retrieved));
+        Assert.That(callbackCount, Is.EqualTo(1));
+        var date = await client.DateAsync(CancellationToken.None);
+        Assert.That(date.ResponseCode, Is.EqualTo((int)UsenetResponseType.DateAndTime));
+    }
+
+    [Test]
+    public async Task DecodedBodiesAsync_MissingBodyContinuesInProtocolOrder()
+    {
+        var expected = Array.Empty<byte>();
+        await using var server = ScriptedNntpServer.StartConnectionScript(
+            async (reader, writer, cancellationToken) =>
+            {
+                _ = await reader.ReadLineAsync(cancellationToken);
+                _ = await reader.ReadLineAsync(cancellationToken);
+                await writer.WriteLineAsync("430 no article with that message-id");
+                await WriteSimpleYencArticleAsync(writer, expected, $"size={expected.Length}");
+                Assert.That(
+                    await reader.ReadLineAsync(cancellationToken),
+                    Is.EqualTo("DATE"));
+                await writer.WriteLineAsync("111 20260709213000");
+            });
+        await using var client = new UsenetClient();
+        await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
+        var completion = new TaskCompletionSource<ArticleBodyResult>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var batch = await client.DecodedBodiesAsync(
+            new SegmentId[] { "missing@example.com", "available@example.com" },
+            completion.SetResult,
+            CancellationToken.None);
+        var missing = await batch.Responses[0];
+        var available = await batch.Responses[1];
+        using var decoded = new MemoryStream();
+        await available.Stream!.CopyToAsync(decoded);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(missing.ResponseType,
+                Is.EqualTo(UsenetResponseType.NoArticleWithThatMessageId));
+            Assert.That(missing.Stream, Is.Null);
+            Assert.That(decoded.ToArray(), Is.EqualTo(expected));
+        });
+        Assert.That(await completion.Task.WaitAsync(TimeSpan.FromSeconds(2)),
+            Is.EqualTo(ArticleBodyResult.NotFound));
+        var date = await client.DateAsync(CancellationToken.None);
+        Assert.That(date.ResponseCode, Is.EqualTo((int)UsenetResponseType.DateAndTime));
+    }
+
+    [Test]
+    public async Task DecodedBodiesAsync_TruncatedBodyFailsRemainingBatch()
+    {
+        await using var server = ScriptedNntpServer.StartConnectionScript(
+            async (reader, writer, cancellationToken) =>
+            {
+                _ = await reader.ReadLineAsync(cancellationToken);
+                _ = await reader.ReadLineAsync(cancellationToken);
+                await writer.WriteAsync(
+                    "222 body follows\r\n" +
+                    "=ybegin line=128 size=10 name=truncated.bin\r\n" +
+                    "encoded-without-terminator\r\n");
+            });
+        await using var client = new UsenetClient();
+        await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
+        var completion = new TaskCompletionSource<ArticleBodyResult>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var batch = await client.DecodedBodiesAsync(
+            new SegmentId[] { "truncated@example.com", "pending@example.com" },
+            completion.SetResult,
+            CancellationToken.None);
+        var truncated = await batch.Responses[0];
+
+        Assert.ThrowsAsync<UsenetProtocolException>(async () =>
+            await truncated.Stream!.CopyToAsync(Stream.Null));
+        Assert.ThrowsAsync<UsenetProtocolException>(async () =>
+            await batch.Responses[1]);
+        Assert.That(await completion.Task.WaitAsync(TimeSpan.FromSeconds(2)),
+            Is.EqualTo(ArticleBodyResult.NotRetrieved));
+        Assert.That(client.IsHealthy, Is.False);
+    }
+
+    [Test]
+    public async Task DecodedBodiesAsync_CancellationDrainsBatchAndReusesConnection()
+    {
+        var partialBodySent = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var continueBody = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var server = ScriptedNntpServer.StartConnectionScript(
+            async (reader, writer, cancellationToken) =>
+            {
+                _ = await reader.ReadLineAsync(cancellationToken);
+                _ = await reader.ReadLineAsync(cancellationToken);
+                await writer.WriteAsync(
+                    "222 body follows\r\n" +
+                    "=ybegin line=128 size=2 name=first.bin\r\n" +
+                    "k\r\n");
+                partialBodySent.SetResult();
+                await continueBody.Task.WaitAsync(cancellationToken);
+                await writer.WriteAsync("l\r\n=yend size=2\r\n.\r\n");
+                await WriteSimpleYencArticleAsync(writer, [3, 4], "size=2");
+                Assert.That(
+                    await reader.ReadLineAsync(cancellationToken),
+                    Is.EqualTo("DATE"));
+                await writer.WriteLineAsync("111 20260709213000");
+            });
+        await using var client = new UsenetClient(new UsenetClientOptions
+        {
+            ReadTimeout = TimeSpan.FromSeconds(1),
+            AbandonedBodyDrainLimit = 1024
+        });
+        await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
+        using var cts = new CancellationTokenSource();
+        var callbackCount = 0;
+        var completion = new TaskCompletionSource<ArticleBodyResult>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var batch = await client.DecodedBodiesAsync(
+            new SegmentId[] { "first@example.com", "second@example.com" },
+            result =>
+            {
+                Interlocked.Increment(ref callbackCount);
+                completion.TrySetResult(result);
+            },
+            cts.Token);
+        var first = await batch.Responses[0];
+        var copyTask = first.Stream!.CopyToAsync(Stream.Null);
+        await partialBodySent.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        cts.Cancel();
+        continueBody.SetResult();
+
+        Assert.ThrowsAsync<OperationCanceledException>(async () => await copyTask);
+        Assert.ThrowsAsync<OperationCanceledException>(async () =>
+            await batch.Responses[1]);
+        Assert.That(await completion.Task.WaitAsync(TimeSpan.FromSeconds(2)),
+            Is.EqualTo(ArticleBodyResult.Cancelled));
+        Assert.That(callbackCount, Is.EqualTo(1));
+        var date = await client.DateAsync(CancellationToken.None);
+        Assert.That(date.ResponseCode, Is.EqualTo((int)UsenetResponseType.DateAndTime));
+        Assert.That(client.IsHealthy, Is.True);
+    }
+
+    [Test]
     public async Task BodyAsync_TruncatedTransferFailsStreamAndReportsNotRetrieved()
     {
         await using var server = new ScriptedNntpServer(async (_, writer, _) =>
@@ -802,5 +1006,33 @@ public class UsenetClientDeterministicTests
 
         await writer.WriteAsync(Encoding.Latin1.GetString(wireEncoded));
         await writer.WriteAsync($"\r\n=yend {yendFields}\r\n.\r\n");
+    }
+
+    private static async Task WriteSimpleYencArticleAsync(
+        StreamWriter writer,
+        byte[] decoded,
+        string yendFields,
+        string fileName = "pipelined.bin")
+    {
+        var encoded = new List<byte>(decoded.Length);
+        foreach (var value in decoded)
+        {
+            var encodedValue = unchecked((byte)(value + 42));
+            if (encodedValue is 0 or (byte)'\r' or (byte)'\n' or (byte)'=')
+            {
+                encoded.Add((byte)'=');
+                encodedValue = unchecked((byte)(encodedValue + 64));
+            }
+
+            encoded.Add(encodedValue);
+        }
+
+        await writer.WriteAsync(
+            $"222 body follows\r\n" +
+            $"=ybegin line=128 size={decoded.Length} name={fileName}\r\n" +
+            (encoded.Count > 0
+                ? Encoding.Latin1.GetString(encoded.ToArray()) + "\r\n"
+                : string.Empty) +
+            $"=yend {yendFields}\r\n.\r\n");
     }
 }

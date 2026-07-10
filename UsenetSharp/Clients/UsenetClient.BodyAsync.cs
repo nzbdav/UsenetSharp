@@ -184,12 +184,13 @@ public partial class UsenetClient
         }
     }
 
-    private async Task ReadDecodedBodyToPipeAsync(
+    private async Task<Exception?> ReadDecodedBodyToPipeAsync(
         PipeWriter writer,
         TaskCompletionSource<UsenetYencHeader?> headersCompletion,
         CancellationTokenSource operationCts,
         CancellationToken callerCancellationToken,
-        Action<ArticleBodyResult>? onConnectionReadyAgain)
+        Action<ArticleBodyResult>? onConnectionReadyAgain,
+        bool releaseCommandLock = true)
     {
         Exception? failure = null;
         byte[]? encodedBuffer = null;
@@ -418,7 +419,11 @@ public partial class UsenetClient
 
             await writer.CompleteAsync(failure).ConfigureAwait(false);
             operationCts.Dispose();
-            _commandLock.Release();
+            if (releaseCommandLock)
+            {
+                _commandLock.Release();
+            }
+
             try
             {
                 onConnectionReadyAgain?.Invoke(
@@ -429,6 +434,8 @@ public partial class UsenetClient
                 // User callbacks must not fault the unobserved background transfer task.
             }
         }
+
+        return failure;
     }
 
     private static async ValueTask<(

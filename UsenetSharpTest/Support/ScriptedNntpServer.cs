@@ -9,16 +9,31 @@ internal sealed class ScriptedNntpServer : IAsyncDisposable
 {
     private readonly TcpListener _listener;
     private readonly CancellationTokenSource _cts = new();
-    private readonly Func<string, StreamWriter, CancellationToken, Task> _commandHandler;
+    private readonly Func<string, StreamWriter, CancellationToken, Task>? _commandHandler;
+    private readonly Func<StreamReader, StreamWriter, CancellationToken, Task>? _connectionHandler;
     private readonly Task _acceptLoop;
 
     public ScriptedNntpServer(Func<string, StreamWriter, CancellationToken, Task> commandHandler)
+        : this(commandHandler, null)
+    {
+    }
+
+    private ScriptedNntpServer(
+        Func<string, StreamWriter, CancellationToken, Task>? commandHandler,
+        Func<StreamReader, StreamWriter, CancellationToken, Task>? connectionHandler)
     {
         _commandHandler = commandHandler;
+        _connectionHandler = connectionHandler;
         _listener = new TcpListener(IPAddress.Loopback, 0);
         _listener.Start();
         Port = ((IPEndPoint)_listener.LocalEndpoint).Port;
         _acceptLoop = AcceptLoopAsync();
+    }
+
+    public static ScriptedNntpServer StartConnectionScript(
+        Func<StreamReader, StreamWriter, CancellationToken, Task> connectionHandler)
+    {
+        return new ScriptedNntpServer(null, connectionHandler);
     }
 
     public int Port { get; }
@@ -51,6 +66,12 @@ internal sealed class ScriptedNntpServer : IAsyncDisposable
         { AutoFlush = true, NewLine = "\r\n" })
         {
             await writer.WriteLineAsync("200 scripted server ready");
+            if (_connectionHandler != null)
+            {
+                await _connectionHandler(reader, writer, _cts.Token);
+                return;
+            }
+
             while (!_cts.IsCancellationRequested)
             {
                 var command = await reader.ReadLineAsync(_cts.Token);
@@ -60,7 +81,7 @@ internal sealed class ScriptedNntpServer : IAsyncDisposable
                 }
 
                 Commands.Enqueue(command);
-                await _commandHandler(command, writer, _cts.Token);
+                await _commandHandler!(command, writer, _cts.Token);
             }
         }
     }
