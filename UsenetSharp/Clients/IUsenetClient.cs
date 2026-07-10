@@ -4,6 +4,10 @@ namespace UsenetSharp.Clients;
 
 public interface IUsenetClient
 {
+    bool IsConnected { get; }
+
+    bool IsHealthy { get; }
+
     Task ConnectAsync(
         string host, int port, bool useSsl, CancellationToken cancellationToken);
 

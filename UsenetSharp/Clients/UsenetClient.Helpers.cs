@@ -7,6 +7,7 @@ public partial class UsenetClient
 {
     private void CleanupConnection(bool createNewLifetime = true)
     {
+        Volatile.Write(ref _connectionState, 0);
         lock (_connectionCtsLock)
         {
             _connectionCts.Cancel();

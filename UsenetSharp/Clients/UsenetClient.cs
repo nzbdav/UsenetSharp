@@ -27,6 +27,26 @@ public partial class UsenetClient : IUsenetClient, IDisposable, IAsyncDisposable
         _options = options;
     }
 
+    public bool IsConnected =>
+        Volatile.Read(ref _disposeState) == 0 &&
+        Volatile.Read(ref _connectionState) != 0;
+
+    public bool IsHealthy
+    {
+        get
+        {
+            if (!IsConnected)
+            {
+                return false;
+            }
+
+            lock (_stateLock)
+            {
+                return _backgroundException == null;
+            }
+        }
+    }
+
     public async Task WaitForReadyAsync(CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();

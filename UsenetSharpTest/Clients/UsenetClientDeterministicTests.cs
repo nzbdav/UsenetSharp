@@ -125,6 +125,11 @@ public class UsenetClientDeterministicTests
             await response.Stream!.CopyToAsync(Stream.Null));
         Assert.That(await completion.Task.WaitAsync(TimeSpan.FromSeconds(2)),
             Is.EqualTo(ArticleBodyResult.NotRetrieved));
+        Assert.Multiple(() =>
+        {
+            Assert.That(client.IsConnected, Is.True);
+            Assert.That(client.IsHealthy, Is.False);
+        });
     }
 
     [Test]
@@ -234,6 +239,7 @@ public class UsenetClientDeterministicTests
             Is.EqualTo(ArticleBodyResult.NotRetrieved));
         var date = await client.DateAsync(CancellationToken.None);
         Assert.That(date.ResponseCode, Is.EqualTo((int)UsenetResponseType.DateAndTime));
+        Assert.That(client.IsHealthy, Is.True);
     }
 
     [Test]
@@ -245,6 +251,32 @@ public class UsenetClientDeterministicTests
         await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
 
         Assert.ThrowsAsync<UsenetProtocolException>(() => client.DateAsync(CancellationToken.None));
+    }
+
+    [Test]
+    public async Task HealthProperties_ReflectConnectionLifecycle()
+    {
+        await using var server = new ScriptedNntpServer((_, _, _) => Task.CompletedTask);
+        var client = new UsenetClient();
+        Assert.Multiple(() =>
+        {
+            Assert.That(client.IsConnected, Is.False);
+            Assert.That(client.IsHealthy, Is.False);
+        });
+
+        await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
+        Assert.Multiple(() =>
+        {
+            Assert.That(client.IsConnected, Is.True);
+            Assert.That(client.IsHealthy, Is.True);
+        });
+
+        await client.DisposeAsync();
+        Assert.Multiple(() =>
+        {
+            Assert.That(client.IsConnected, Is.False);
+            Assert.That(client.IsHealthy, Is.False);
+        });
     }
 
     [Test]

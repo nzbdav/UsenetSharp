@@ -57,6 +57,8 @@ public partial class UsenetClient
             if (responseCode != (int)UsenetResponseType.ServerReadyPostingAllowed &&
                 responseCode != (int)UsenetResponseType.ServerReadyNoPostingAllowed)
                 throw new UsenetConnectionException(response!) { ResponseCode = responseCode };
+
+            Volatile.Write(ref _connectionState, 1);
         }
         catch
         {

@@ -15,5 +15,6 @@ public partial class UsenetClient
     private CancellationTokenSource _connectionCts = new();
     private readonly object _connectionCtsLock = new();
     private readonly object _stateLock = new();
+    private int _connectionState;
     private volatile ExceptionDispatchInfo? _backgroundException;
 }
