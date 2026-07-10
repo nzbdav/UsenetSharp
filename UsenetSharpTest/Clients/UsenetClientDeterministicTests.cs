@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using UsenetSharp.Clients;
@@ -870,8 +871,36 @@ public class UsenetClientDeterministicTests
             await copyTask.WaitAsync(TimeSpan.FromSeconds(2)));
         Assert.That(await completion.Task.WaitAsync(TimeSpan.FromSeconds(2)),
             Is.EqualTo(ArticleBodyResult.NotRetrieved));
-        Assert.ThrowsAsync<TimeoutException>(() =>
+        var exception = Assert.ThrowsAsync<UsenetProtocolException>(() =>
             client.DateAsync(CancellationToken.None));
+        Assert.That(exception!.InnerException, Is.TypeOf<TimeoutException>());
+    }
+
+    [Test]
+    public async Task DateAsync_StoredBackgroundCancellationIsReportedAsProtocolFailure()
+    {
+        await using var server = new ScriptedNntpServer((_, _, _) => Task.CompletedTask);
+        await using var client = new UsenetClient();
+        await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
+        var interruption = new OperationCanceledException("Earlier operation was interrupted.");
+        var recordBackgroundFailure = typeof(UsenetClient).GetMethod(
+            "RecordBackgroundFailure",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.That(recordBackgroundFailure, Is.Not.Null);
+        recordBackgroundFailure!.Invoke(client, [interruption]);
+
+        var exception = Assert.ThrowsAsync<UsenetProtocolException>(() =>
+            client.DateAsync(CancellationToken.None));
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(
+                exception!.Message,
+                Is.EqualTo("connection unusable after an earlier interrupted operation"));
+            Assert.That(exception.InnerException, Is.SameAs(interruption));
+            Assert.That(client.IsHealthy, Is.False);
+            Assert.That(server.Commands, Is.Empty);
+        });
     }
 
     [Test]

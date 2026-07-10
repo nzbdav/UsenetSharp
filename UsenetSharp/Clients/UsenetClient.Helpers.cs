@@ -80,9 +80,17 @@ public partial class UsenetClient
 
     private void ThrowIfUnhealthy()
     {
+        Exception? backgroundException;
         lock (_stateLock)
         {
-            _backgroundException?.Throw();
+            backgroundException = _backgroundException?.SourceException;
+        }
+
+        if (backgroundException != null)
+        {
+            throw new UsenetProtocolException(
+                "connection unusable after an earlier interrupted operation",
+                backgroundException);
         }
     }
 
