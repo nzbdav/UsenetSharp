@@ -20,7 +20,7 @@ package source:
 
 ```bash
 dotnet nuget add source \
-  "https://nuget.pkg.github.com/hoivikaj/index.json" \
+  "https://nuget.pkg.github.com/nzbdav/index.json" \
   --name github \
   --username YOUR_GITHUB_USERNAME \
   --password "$GITHUB_PACKAGES_TOKEN" \

@@ -10,7 +10,7 @@ the newest package before reporting an issue that may already be resolved.
 Do not open a public issue for a suspected vulnerability.
 
 Use GitHub's
-[private vulnerability reporting](https://github.com/hoivikaj/UsenetSharp/security/advisories/new)
+[private vulnerability reporting](https://github.com/nzbdav/UsenetSharp/security/advisories/new)
 to send a description, reproduction steps, affected versions, and any proposed
 mitigation. You should receive an acknowledgement within seven days. We will
 coordinate validation, remediation, and disclosure through the private

@@ -12,9 +12,9 @@
         <Title>UsenetSharp</Title>
         <Description>Asynchronous, read-only NNTP access and streaming yEnc decoding for .NET.</Description>
         <PackageTags>usenet;nntp;yenc;networking</PackageTags>
-        <PackageProjectUrl>https://github.com/hoivikaj/UsenetSharp</PackageProjectUrl>
+        <PackageProjectUrl>https://github.com/nzbdav/UsenetSharp</PackageProjectUrl>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>
-        <RepositoryUrl>https://github.com/hoivikaj/UsenetSharp.git</RepositoryUrl>
+        <RepositoryUrl>https://github.com/nzbdav/UsenetSharp.git</RepositoryUrl>
         <RepositoryType>git</RepositoryType>
         <PackageReadmeFile>README.md</PackageReadmeFile>
         <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
