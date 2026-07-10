@@ -6,6 +6,7 @@ namespace UsenetSharp.Clients;
 
 public partial class UsenetClient
 {
+    private readonly UsenetClientOptions _options;
     private TcpClient? _tcpClient;
     private Stream? _stream;
     private NntpLineReader? _reader;

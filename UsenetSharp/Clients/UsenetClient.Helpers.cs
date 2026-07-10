@@ -138,7 +138,7 @@ public partial class UsenetClient
     private CancellationTokenSource CreateCtsWithTimeout(CancellationToken cancellationToken)
     {
         var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        cts.CancelAfter(TimeSpan.FromSeconds(10));
+        cts.CancelAfter(_options.ReadTimeout);
         return cts;
     }
 
@@ -172,7 +172,7 @@ public partial class UsenetClient
         CancellationTokenSource timeoutCts,
         CancellationToken operationToken)
     {
-        timeoutCts.CancelAfter(TimeSpan.FromSeconds(10));
+        timeoutCts.CancelAfter(_options.ReadTimeout);
         try
         {
             return await _reader!.ReadLineBytesAsync(timeoutCts.Token).ConfigureAwait(false);

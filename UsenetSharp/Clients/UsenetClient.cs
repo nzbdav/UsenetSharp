@@ -4,6 +4,29 @@ public partial class UsenetClient : IUsenetClient, IDisposable, IAsyncDisposable
 {
     private int _disposeState;
 
+    public UsenetClient()
+        : this(new UsenetClientOptions())
+    {
+    }
+
+    public UsenetClient(UsenetClientOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        if (options.ReadTimeout <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options), "ReadTimeout must be greater than zero.");
+        }
+
+        if (options.AbandonedBodyDrainLimit < 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options), "AbandonedBodyDrainLimit cannot be negative.");
+        }
+
+        _options = options;
+    }
+
     public async Task WaitForReadyAsync(CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();

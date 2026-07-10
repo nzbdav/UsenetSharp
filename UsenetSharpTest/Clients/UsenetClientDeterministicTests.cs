@@ -135,7 +135,10 @@ public class UsenetClientDeterministicTests
             await writer.WriteAsync("222 body follows\r\npartial");
             await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
         });
-        await using var client = new UsenetClient();
+        await using var client = new UsenetClient(new UsenetClientOptions
+        {
+            ReadTimeout = TimeSpan.FromMilliseconds(100)
+        });
         await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
         var completion = new TaskCompletionSource<ArticleBodyResult>(
             TaskCreationOptions.RunContinuationsAsynchronously);
@@ -144,9 +147,21 @@ public class UsenetClientDeterministicTests
             "article@example.com", completion.SetResult, CancellationToken.None);
 
         Assert.ThrowsAsync<TimeoutException>(async () =>
-            await response.Stream!.CopyToAsync(Stream.Null).WaitAsync(TimeSpan.FromSeconds(12)));
+            await response.Stream!.CopyToAsync(Stream.Null).WaitAsync(TimeSpan.FromSeconds(2)));
         Assert.That(await completion.Task.WaitAsync(TimeSpan.FromSeconds(2)),
             Is.EqualTo(ArticleBodyResult.NotRetrieved));
+    }
+
+    [Test]
+    public void Constructor_RejectsInvalidOptions()
+    {
+        Assert.Multiple(() =>
+        {
+            Assert.Throws<ArgumentOutOfRangeException>(() =>
+                new UsenetClient(new UsenetClientOptions { ReadTimeout = TimeSpan.Zero }));
+            Assert.Throws<ArgumentOutOfRangeException>(() =>
+                new UsenetClient(new UsenetClientOptions { AbandonedBodyDrainLimit = -1 }));
+        });
     }
 
     [Test]
