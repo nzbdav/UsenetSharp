@@ -20,6 +20,7 @@ public partial class UsenetClient
         {
             ThrowIfDisposed();
             CleanupConnection();
+            ThrowIfDisposed();
             using var operationCts = CreateOperationTokenSource(cancellationToken);
 
             _tcpClient = new TcpClient

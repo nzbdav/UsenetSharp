@@ -7,21 +7,25 @@ public partial class UsenetClient
 {
     private void CleanupConnection(bool createNewLifetime = true)
     {
-        _connectionCts.Cancel();
+        lock (_connectionCtsLock)
+        {
+            _connectionCts.Cancel();
+            _connectionCts.Dispose();
+            if (createNewLifetime)
+            {
+                _connectionCts = new CancellationTokenSource();
+            }
+        }
+
         _reader?.Dispose();
         _writer?.Dispose();
         _stream?.Dispose();
         _tcpClient?.Dispose();
-        _connectionCts.Dispose();
 
         _reader = null;
         _writer = null;
         _stream = null;
         _tcpClient = null;
-        if (createNewLifetime)
-        {
-            _connectionCts = new CancellationTokenSource();
-        }
 
         lock (this)
         {
@@ -67,8 +71,26 @@ public partial class UsenetClient
 
     private CancellationTokenSource CreateOperationTokenSource(CancellationToken cancellationToken)
     {
-        return CancellationTokenSource.CreateLinkedTokenSource(
-            cancellationToken, _connectionCts.Token);
+        lock (_connectionCtsLock)
+        {
+            return CancellationTokenSource.CreateLinkedTokenSource(
+                cancellationToken, _connectionCts.Token);
+        }
+    }
+
+    private void CancelConnectionLifetime()
+    {
+        lock (_connectionCtsLock)
+        {
+            try
+            {
+                _connectionCts.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+                // A concurrent cleanup has already ended this connection lifetime.
+            }
+        }
     }
 
     private static string ValidateSegmentId(SegmentId segmentId)

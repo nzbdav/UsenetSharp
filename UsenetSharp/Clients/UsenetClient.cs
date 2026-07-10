@@ -26,7 +26,7 @@ public partial class UsenetClient : IUsenetClient, IDisposable, IAsyncDisposable
         }
 
         _disposed = true;
-        _connectionCts.Cancel();
+        CancelConnectionLifetime();
         _commandLock.WaitAsync().GetAwaiter().GetResult();
         CleanupConnection(createNewLifetime: false);
         // Dispose the semaphore while still holding it so queued waiters are
@@ -43,7 +43,7 @@ public partial class UsenetClient : IUsenetClient, IDisposable, IAsyncDisposable
         }
 
         _disposed = true;
-        await _connectionCts.CancelAsync().ConfigureAwait(false);
+        CancelConnectionLifetime();
         await _commandLock.WaitAsync().ConfigureAwait(false);
         CleanupConnection(createNewLifetime: false);
         // Dispose the semaphore while still holding it so queued waiters are
