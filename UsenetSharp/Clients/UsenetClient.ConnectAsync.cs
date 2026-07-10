@@ -22,7 +22,12 @@ public partial class UsenetClient
             CleanupConnection();
             using var operationCts = CreateOperationTokenSource(cancellationToken);
 
-            _tcpClient = new TcpClient();
+            _tcpClient = new TcpClient
+            {
+                NoDelay = true
+            };
+            _tcpClient.Client.SetSocketOption(
+                SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
             await _tcpClient.ConnectAsync(host, port, operationCts.Token).ConfigureAwait(false);
             _stream = _tcpClient.GetStream();
 
