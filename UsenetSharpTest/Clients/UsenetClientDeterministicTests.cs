@@ -182,6 +182,97 @@ public class UsenetClientDeterministicTests
     }
 
     [Test]
+    public async Task DecodedBodyAsync_WithValidMultipartCrc32_Succeeds()
+    {
+        var expected = Enumerable.Range(0, 180_000)
+            .Select(index => (byte)((index * 17 + 3) % 256))
+            .ToArray();
+        var crc32 = RapidYencSharp.Crc32.Compute(expected);
+        await using var server = new ScriptedNntpServer(async (_, writer, _) =>
+            await WriteYencArticleAsync(
+                writer,
+                expected,
+                $"size={expected.Length} crc32=00000000\tPCRC32={crc32:X8} part=2",
+                multipart: true));
+        await using var client = new UsenetClient(new UsenetClientOptions
+        {
+            ValidateDecodedBodyCrc32 = true
+        });
+        await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
+
+        var response = await client.DecodedBodyAsync(
+            "article@example.com", CancellationToken.None);
+        using var decoded = new MemoryStream();
+        await response.Stream!.CopyToAsync(decoded);
+
+        Assert.That(decoded.ToArray(), Is.EqualTo(expected));
+    }
+
+    [Test]
+    public async Task DecodedBodyAsync_WithInvalidCrc32_Fails()
+    {
+        var expected = Encoding.ASCII.GetBytes("crc validation failure");
+        var incorrectCrc32 = RapidYencSharp.Crc32.Compute(expected) ^ 1;
+        await using var server = new ScriptedNntpServer(async (_, writer, _) =>
+            await WriteYencArticleAsync(
+                writer, expected, $"size={expected.Length} crc32={incorrectCrc32:x8}"));
+        await using var client = new UsenetClient(new UsenetClientOptions
+        {
+            ValidateDecodedBodyCrc32 = true
+        });
+        await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
+        var completion = new TaskCompletionSource<ArticleBodyResult>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var response = await client.DecodedBodyAsync(
+            "article@example.com", completion.SetResult, CancellationToken.None);
+
+        var exception = Assert.ThrowsAsync<InvalidDataException>(async () =>
+            await response.Stream!.CopyToAsync(Stream.Null));
+        Assert.That(exception!.Message, Does.Contain("trailer expected"));
+        Assert.That(await completion.Task.WaitAsync(TimeSpan.FromSeconds(2)),
+            Is.EqualTo(ArticleBodyResult.NotRetrieved));
+    }
+
+    [Test]
+    public async Task DecodedBodyAsync_WithMissingCrc32_Fails()
+    {
+        var expected = Encoding.ASCII.GetBytes("missing crc");
+        await using var server = new ScriptedNntpServer(async (_, writer, _) =>
+            await WriteYencArticleAsync(writer, expected, $"size={expected.Length}"));
+        await using var client = new UsenetClient(new UsenetClientOptions
+        {
+            ValidateDecodedBodyCrc32 = true
+        });
+        await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
+
+        var response = await client.DecodedBodyAsync(
+            "article@example.com", CancellationToken.None);
+
+        Assert.ThrowsAsync<InvalidDataException>(async () =>
+            await response.Stream!.CopyToAsync(Stream.Null));
+    }
+
+    [Test]
+    public async Task DecodedBodyAsync_Crc32ValidationDisabledByDefault_IgnoresMismatch()
+    {
+        var expected = Encoding.ASCII.GetBytes("unchecked crc");
+        var incorrectCrc32 = RapidYencSharp.Crc32.Compute(expected) ^ 1;
+        await using var server = new ScriptedNntpServer(async (_, writer, _) =>
+            await WriteYencArticleAsync(
+                writer, expected, $"size={expected.Length} crc32={incorrectCrc32:x8}"));
+        await using var client = new UsenetClient();
+        await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
+
+        var response = await client.DecodedBodyAsync(
+            "article@example.com", CancellationToken.None);
+        using var decoded = new MemoryStream();
+        await response.Stream!.CopyToAsync(decoded);
+
+        Assert.That(decoded.ToArray(), Is.EqualTo(expected));
+    }
+
+    [Test]
     public async Task DecodedBodyAsync_TruncatedTransferFailsAndReportsNotRetrieved()
     {
         await using var server = new ScriptedNntpServer(async (_, writer, _) =>
@@ -657,5 +748,30 @@ public class UsenetClientDeterministicTests
         }
 
         return stuffed.ToArray();
+    }
+
+    private static async Task WriteYencArticleAsync(
+        StreamWriter writer,
+        byte[] decoded,
+        string yendFields,
+        bool multipart = false)
+    {
+        int? column = 0;
+        var encoded = RapidYencSharp.YencEncoder.EncodeEx(
+            decoded, ref column, 128, true);
+        var wireEncoded = DotStuff(encoded);
+        var multipartFields = multipart ? " part=2 total=2" : string.Empty;
+
+        await writer.WriteAsync(
+            $"222 body follows\r\n" +
+            $"=ybegin line=128 size={decoded.Length}{multipartFields} name=crc.bin\r\n");
+        if (multipart)
+        {
+            await writer.WriteAsync(
+                $"=ypart begin=1 end={decoded.Length}\r\n");
+        }
+
+        await writer.WriteAsync(Encoding.Latin1.GetString(wireEncoded));
+        await writer.WriteAsync($"\r\n=yend {yendFields}\r\n.\r\n");
     }
 }

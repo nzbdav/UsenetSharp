@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Buffers.Text;
 using System.IO.Pipelines;
 using System.Runtime.ExceptionServices;
 using System.Text;
@@ -209,6 +210,7 @@ public partial class UsenetClient
             string? ybeginLine = null;
             string? ypartLine = null;
             RapidYencDecoderState? decoderState = RapidYencDecoderState.RYDEC_STATE_CRLF;
+            uint decodedCrc32 = 0;
             var cancellationToken = operationCts.Token;
             using var readTimeout = new CoalescedReadTimeout(
                 cancellationToken, _options.ReadTimeout, _timeProvider);
@@ -254,8 +256,17 @@ public partial class UsenetClient
                             writer,
                             encodedBuffer.AsMemory(0, encodedLength),
                             decoderState,
+                            decodedCrc32,
+                            _options.ValidateDecodedBodyCrc32,
                             cancellationToken).ConfigureAwait(false);
                         decoderState = flush.DecoderState;
+                        decodedCrc32 = flush.Crc32;
+                    }
+
+                    if (_options.ValidateDecodedBodyCrc32 && !dataEnded)
+                    {
+                        throw new InvalidDataException(
+                            "Reached end of NNTP body without finding a yEnc trailer.");
                     }
 
                     break;
@@ -313,10 +324,19 @@ public partial class UsenetClient
                             writer,
                             encodedBuffer.AsMemory(0, encodedLength),
                             decoderState,
+                            decodedCrc32,
+                            _options.ValidateDecodedBodyCrc32,
                             cancellationToken).ConfigureAwait(false);
                         encodedLength = 0;
                         decoderState = flush.DecoderState;
+                        decodedCrc32 = flush.Crc32;
                         shouldWrite = !flush.Result.IsCompleted && !flush.Result.IsCanceled;
+                    }
+
+                    if (_options.ValidateDecodedBodyCrc32 && shouldWrite)
+                    {
+                        ValidateDecodedBodyCrc32(
+                            lineBytes.Span, ypartLine != null, decodedCrc32);
                     }
 
                     continue;
@@ -330,9 +350,12 @@ public partial class UsenetClient
                         writer,
                         encodedBuffer.AsMemory(0, encodedLength),
                         decoderState,
+                        decodedCrc32,
+                        _options.ValidateDecodedBodyCrc32,
                         cancellationToken).ConfigureAwait(false);
                     encodedLength = 0;
                     decoderState = flush.DecoderState;
+                    decodedCrc32 = flush.Crc32;
                     shouldWrite = !flush.Result.IsCompleted && !flush.Result.IsCanceled;
                     if (!shouldWrite)
                     {
@@ -357,9 +380,12 @@ public partial class UsenetClient
                         writer,
                         encodedBuffer.AsMemory(0, encodedLength),
                         decoderState,
+                        decodedCrc32,
+                        _options.ValidateDecodedBodyCrc32,
                         cancellationToken).ConfigureAwait(false);
                     encodedLength = 0;
                     decoderState = flush.DecoderState;
+                    decodedCrc32 = flush.Crc32;
                     shouldWrite = !flush.Result.IsCompleted && !flush.Result.IsCanceled;
                 }
             }
@@ -407,19 +433,117 @@ public partial class UsenetClient
 
     private static async ValueTask<(
         FlushResult Result,
-        RapidYencDecoderState? DecoderState)> DecodeAndFlushAsync(
+        RapidYencDecoderState? DecoderState,
+        uint Crc32)> DecodeAndFlushAsync(
         PipeWriter writer,
         ReadOnlyMemory<byte> encoded,
         RapidYencDecoderState? decoderState,
+        uint crc32,
+        bool computeCrc32,
         CancellationToken cancellationToken)
     {
         var destination = writer.GetSpan(encoded.Length);
         var decodedLength = YencDecoder.DecodeEx(
             encoded.Span, destination, ref decoderState, isRaw: true);
+        if (computeCrc32)
+        {
+            crc32 = Crc32.Compute(destination[..decodedLength], crc32);
+        }
+
         writer.Advance(decodedLength);
         var result = await writer.FlushAsync(cancellationToken).ConfigureAwait(false);
-        return (result, decoderState);
+        return (result, decoderState, crc32);
     }
+
+    private static void ValidateDecodedBodyCrc32(
+        ReadOnlySpan<byte> yendLine,
+        bool isMultipart,
+        uint actualCrc32)
+    {
+        var fieldName = isMultipart ? "pcrc32"u8 : "crc32"u8;
+        if (!TryParseYencTrailerCrc32(yendLine, fieldName, out var expectedCrc32))
+        {
+            throw new InvalidDataException(
+                $"The yEnc trailer does not contain a valid {Encoding.ASCII.GetString(fieldName)} value.");
+        }
+
+        if (actualCrc32 != expectedCrc32)
+        {
+            throw new InvalidDataException(
+                $"The decoded yEnc CRC32 was {actualCrc32:x8}, but the trailer expected {expectedCrc32:x8}.");
+        }
+    }
+
+    private static bool TryParseYencTrailerCrc32(
+        ReadOnlySpan<byte> trailer,
+        ReadOnlySpan<byte> fieldName,
+        out uint crc32)
+    {
+        var position = 0;
+        while (position < trailer.Length)
+        {
+            while (position < trailer.Length && IsAsciiWhitespace(trailer[position]))
+            {
+                position++;
+            }
+
+            var tokenStart = position;
+            while (position < trailer.Length && !IsAsciiWhitespace(trailer[position]))
+            {
+                position++;
+            }
+
+            var token = trailer[tokenStart..position];
+            var separator = token.IndexOf((byte)'=');
+            if (separator <= 0 ||
+                !AsciiEqualsIgnoreCase(token[..separator], fieldName))
+            {
+                continue;
+            }
+
+            var value = token[(separator + 1)..];
+            return Utf8Parser.TryParse(value, out crc32, out var consumed, 'X') &&
+                consumed == value.Length;
+        }
+
+        crc32 = 0;
+        return false;
+    }
+
+    private static bool AsciiEqualsIgnoreCase(
+        ReadOnlySpan<byte> left,
+        ReadOnlySpan<byte> right)
+    {
+        if (left.Length != right.Length)
+        {
+            return false;
+        }
+
+        for (var index = 0; index < left.Length; index++)
+        {
+            var leftValue = left[index];
+            var rightValue = right[index];
+            if (leftValue is >= (byte)'A' and <= (byte)'Z')
+            {
+                leftValue += (byte)('a' - 'A');
+            }
+
+            if (rightValue is >= (byte)'A' and <= (byte)'Z')
+            {
+                rightValue += (byte)('a' - 'A');
+            }
+
+            if (leftValue != rightValue)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool IsAsciiWhitespace(byte value) =>
+        value is (byte)' ' or (byte)'\t' or (byte)'\r' or (byte)'\n';
 
     private async Task ReadBodyToPipeAsync(
         PipeWriter writer,
