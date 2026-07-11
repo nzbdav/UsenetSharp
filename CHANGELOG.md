@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.0.0](https://github.com/nzbdav/UsenetSharp/compare/v1.2.4...v2.0.0) (2026-07-11)
+
+
+### ⚠ BREAKING CHANGES
+
+* **runtime:** UsenetSharp now targets net10.0 only. .NET 9 is no longer supported.
+
+### Features
+
+* **runtime:** target .NET 10 and optimize hot paths ([72c0300](https://github.com/nzbdav/UsenetSharp/commit/72c0300f896ed1c14408884ea0acabe2d567b020))
+
 ## [1.2.4](https://github.com/nzbdav/UsenetSharp/compare/v1.2.3...v1.2.4) (2026-07-11)
 
 
