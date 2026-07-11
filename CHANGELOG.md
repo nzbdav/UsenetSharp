@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.2](https://github.com/nzbdav/UsenetSharp/compare/v2.0.1...v2.0.2) (2026-07-11)
+
+
+### Bug Fixes
+
+* **nntp:** preserve reader state across cancelled refills ([2f40476](https://github.com/nzbdav/UsenetSharp/commit/2f40476bd977c0592cb3586eca7122db753724d8))
+
 ## [2.0.1](https://github.com/nzbdav/UsenetSharp/compare/v2.0.0...v2.0.1) (2026-07-11)
 
 
