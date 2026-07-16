@@ -13,6 +13,27 @@ public sealed record UsenetClientOptions
     public TimeSpan ReadTimeout { get; init; } = TimeSpan.FromSeconds(10);
 
     /// <summary>
+    /// Gets the idle time before the first TCP keepalive probe.
+    /// </summary>
+    /// <remarks>
+    /// Defaults to 60 seconds so pooled idle connections are detected as dead
+    /// well before typical NAT/firewall idle timeouts force a full
+    /// <see cref="ReadTimeout"/> stall on the next command.
+    /// </remarks>
+    public TimeSpan TcpKeepAliveTime { get; init; } = TimeSpan.FromSeconds(60);
+
+    /// <summary>
+    /// Gets the interval between unacknowledged TCP keepalive probes.
+    /// </summary>
+    public TimeSpan TcpKeepAliveInterval { get; init; } = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// Gets the number of unacknowledged keepalive probes before the OS
+    /// declares the connection dead.
+    /// </summary>
+    public int TcpKeepAliveRetryCount { get; init; } = 3;
+
+    /// <summary>
     /// Gets the maximum number of bytes drained after a body consumer stops reading.
     /// </summary>
     public long AbandonedBodyDrainLimit { get; init; } = 1024 * 1024;

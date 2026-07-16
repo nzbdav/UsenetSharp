@@ -24,6 +24,24 @@ public partial class UsenetClient : IUsenetClient, IDisposable, IAsyncDisposable
                 nameof(options), "ReadTimeout must be greater than zero.");
         }
 
+        if (options.TcpKeepAliveTime <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options), "TcpKeepAliveTime must be greater than zero.");
+        }
+
+        if (options.TcpKeepAliveInterval <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options), "TcpKeepAliveInterval must be greater than zero.");
+        }
+
+        if (options.TcpKeepAliveRetryCount < 1)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options), "TcpKeepAliveRetryCount must be at least 1.");
+        }
+
         if (options.AbandonedBodyDrainLimit < 0)
         {
             throw new ArgumentOutOfRangeException(

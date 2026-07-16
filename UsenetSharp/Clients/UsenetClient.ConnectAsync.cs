@@ -27,8 +27,20 @@ public partial class UsenetClient
             {
                 NoDelay = true
             };
-            _tcpClient.Client.SetSocketOption(
-                SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
+            var socket = _tcpClient.Client;
+            socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
+            socket.SetSocketOption(
+                SocketOptionLevel.Tcp,
+                SocketOptionName.TcpKeepAliveTime,
+                (int)_options.TcpKeepAliveTime.TotalSeconds);
+            socket.SetSocketOption(
+                SocketOptionLevel.Tcp,
+                SocketOptionName.TcpKeepAliveInterval,
+                (int)_options.TcpKeepAliveInterval.TotalSeconds);
+            socket.SetSocketOption(
+                SocketOptionLevel.Tcp,
+                SocketOptionName.TcpKeepAliveRetryCount,
+                _options.TcpKeepAliveRetryCount);
             await _tcpClient.ConnectAsync(host, port, operationCts.Token).ConfigureAwait(false);
             _stream = _tcpClient.GetStream();
 

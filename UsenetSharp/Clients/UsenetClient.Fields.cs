@@ -18,4 +18,7 @@ public partial class UsenetClient
     private readonly object _stateLock = new();
     private int _connectionState;
     private volatile ExceptionDispatchInfo? _backgroundException;
+
+    /// <summary>Exposes the connected socket for deterministic socket-option tests.</summary>
+    internal Socket? ConnectedSocket => _tcpClient?.Client;
 }

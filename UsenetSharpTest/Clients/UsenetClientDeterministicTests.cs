@@ -1470,12 +1470,54 @@ public class UsenetClientDeterministicTests
             Assert.Throws<ArgumentOutOfRangeException>(() =>
                 new UsenetClient(new UsenetClientOptions { ReadTimeout = TimeSpan.Zero }));
             Assert.Throws<ArgumentOutOfRangeException>(() =>
+                new UsenetClient(new UsenetClientOptions { TcpKeepAliveTime = TimeSpan.Zero }));
+            Assert.Throws<ArgumentOutOfRangeException>(() =>
+                new UsenetClient(new UsenetClientOptions { TcpKeepAliveInterval = TimeSpan.Zero }));
+            Assert.Throws<ArgumentOutOfRangeException>(() =>
+                new UsenetClient(new UsenetClientOptions { TcpKeepAliveRetryCount = 0 }));
+            Assert.Throws<ArgumentOutOfRangeException>(() =>
                 new UsenetClient(new UsenetClientOptions { AbandonedBodyDrainLimit = -1 }));
             Assert.Throws<ArgumentOutOfRangeException>(() =>
                 new UsenetClient(new UsenetClientOptions
                 {
                     CertificateRevocationCheckMode = (X509RevocationMode)(-1)
                 }));
+        });
+    }
+
+    [Test]
+    public async Task ConnectAsync_AppliesConfiguredTcpKeepAliveOptions()
+    {
+        await using var server = new ScriptedNntpServer(async (_, writer, _) =>
+            await writer.WriteLineAsync("111 20260715120000"));
+        await using var client = new UsenetClient(new UsenetClientOptions
+        {
+            TcpKeepAliveTime = TimeSpan.FromSeconds(45),
+            TcpKeepAliveInterval = TimeSpan.FromSeconds(7),
+            TcpKeepAliveRetryCount = 4
+        });
+        await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
+
+        var socket = client.ConnectedSocket;
+        Assert.That(socket, Is.Not.Null);
+        Assert.Multiple(() =>
+        {
+            Assert.That(
+                (int)socket!.GetSocketOption(System.Net.Sockets.SocketOptionLevel.Socket,
+                    System.Net.Sockets.SocketOptionName.KeepAlive)!,
+                Is.Not.EqualTo(0));
+            Assert.That(
+                (int)socket.GetSocketOption(System.Net.Sockets.SocketOptionLevel.Tcp,
+                    System.Net.Sockets.SocketOptionName.TcpKeepAliveTime)!,
+                Is.EqualTo(45));
+            Assert.That(
+                (int)socket.GetSocketOption(System.Net.Sockets.SocketOptionLevel.Tcp,
+                    System.Net.Sockets.SocketOptionName.TcpKeepAliveInterval)!,
+                Is.EqualTo(7));
+            Assert.That(
+                (int)socket.GetSocketOption(System.Net.Sockets.SocketOptionLevel.Tcp,
+                    System.Net.Sockets.SocketOptionName.TcpKeepAliveRetryCount)!,
+                Is.EqualTo(4));
         });
     }
 
