@@ -888,6 +888,54 @@ public class UsenetClientDeterministicTests
     }
 
     [Test]
+    public async Task CapabilitiesAsync_MissingVersion_ThrowsWithoutPoisoning()
+    {
+        await using var server = new ScriptedNntpServer(async (command, writer, _) =>
+        {
+            if (command == "CAPABILITIES")
+            {
+                await writer.WriteAsync(
+                    "101 Capability list follows\r\n" +
+                    "READER\r\n" +
+                    "IHAVE\r\n" +
+                    ".\r\n");
+            }
+            else if (command == "DATE")
+            {
+                await writer.WriteLineAsync("111 20260709213000");
+            }
+        });
+        await using var client = new UsenetClient();
+        await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
+
+        var exception = Assert.ThrowsAsync<UsenetProtocolException>(() =>
+            client.CapabilitiesAsync(CancellationToken.None));
+        Assert.That(exception!.Message, Does.Contain("VERSION"));
+        Assert.That(client.IsHealthy, Is.True);
+        var date = await client.DateAsync(CancellationToken.None);
+        Assert.That(date.ResponseCode, Is.EqualTo(111));
+    }
+
+    [Test]
+    public async Task CapabilitiesAsync_TruncatedBlock_PoisonsConnection()
+    {
+        await using var server = new ScriptedNntpServer(async (_, writer, _) =>
+        {
+            await writer.WriteAsync(
+                "101 Capability list follows\r\n" +
+                "VERSION 2\r\n" +
+                "READER\r\n");
+            throw new IOException("Close scripted connection.");
+        });
+        await using var client = new UsenetClient();
+        await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
+
+        Assert.ThrowsAsync<UsenetProtocolException>(() =>
+            client.CapabilitiesAsync(CancellationToken.None));
+        Assert.That(client.IsHealthy, Is.False);
+    }
+
+    [Test]
     public async Task ModeReaderAsync_ReturnsServerReady()
     {
         await using var server = new ScriptedNntpServer(async (command, writer, _) =>
