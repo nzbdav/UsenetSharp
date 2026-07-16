@@ -142,6 +142,8 @@ public partial class UsenetClient
 
                 if (responseCode != (int)UsenetResponseType.ArticleRetrievedBodyFollows)
                 {
+                    await DrainUnexpectedMultiLineAsync(responseCode, operationCts.Token)
+                        .ConfigureAwait(false);
                     completionResult =
                         responseCode == (int)UsenetResponseType.NoArticleWithThatMessageId &&
                         completionResult != ArticleBodyResult.NotRetrieved
@@ -254,6 +256,15 @@ public partial class UsenetClient
                 var responseCode = ParseResponseCode(response);
                 if (responseCode != (int)UsenetResponseType.ArticleRetrievedBodyFollows)
                 {
+                    if (IsMultiLineCode(responseCode))
+                    {
+                        var unexpectedDrain = await TryDrainBodyAsync().ConfigureAwait(false);
+                        if (unexpectedDrain != null)
+                        {
+                            return unexpectedDrain;
+                        }
+                    }
+
                     continue;
                 }
 

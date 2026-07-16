@@ -81,6 +81,9 @@ public partial class UsenetClient
                 };
             }
 
+            await DrainUnexpectedMultiLineAsync(responseCode, operationCts.Token)
+                .ConfigureAwait(false);
+
             return new UsenetArticleResponse()
             {
                 ResponseCode = responseCode,

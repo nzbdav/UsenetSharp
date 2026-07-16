@@ -78,6 +78,27 @@ public partial class UsenetClient
         return (response[0] - '0') * 100 + (response[1] - '0') * 10 + (response[2] - '0');
     }
 
+    // Response codes that are always followed by a multi-line data block
+    // (RFC 3977 Appendix C; 211 is only multi-line for LISTGROUP, which this
+    // client never issues, so it is intentionally excluded).
+    private static bool IsMultiLineCode(int code) => code is
+        100 or 101 or 215 or 220 or 221 or 222 or 224 or 225 or 230 or 231;
+
+    private async ValueTask DrainUnexpectedMultiLineAsync(int code, CancellationToken _)
+    {
+        if (!IsMultiLineCode(code))
+        {
+            return;
+        }
+
+        // Bound the drain so a hostile payload cannot pin the connection.
+        var drainFailure = await TryDrainBodyAsync().ConfigureAwait(false);
+        if (drainFailure != null)
+        {
+            RecordConnectionFailure(drainFailure);
+        }
+    }
+
     /// <summary>
     /// Writes a single-line command and reads its status line. Any failure after
     /// command bytes may be on the wire poisons the session (RFC 3977 §3.5).

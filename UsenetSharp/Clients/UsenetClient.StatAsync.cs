@@ -20,6 +20,12 @@ public partial class UsenetClient
                 ct => WriteMessageIdCommandAsync("STAT", segmentId, ct),
                 operationCts.Token).ConfigureAwait(false);
 
+            if (responseCode != (int)UsenetResponseType.ArticleExists)
+            {
+                await DrainUnexpectedMultiLineAsync(responseCode, operationCts.Token)
+                    .ConfigureAwait(false);
+            }
+
             return new UsenetStatResponse()
             {
                 ResponseCode = responseCode,

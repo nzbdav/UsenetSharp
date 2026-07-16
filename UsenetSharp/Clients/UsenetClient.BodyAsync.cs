@@ -76,6 +76,9 @@ public partial class UsenetClient
                 };
             }
 
+            await DrainUnexpectedMultiLineAsync(responseCode, operationCts.Token)
+                .ConfigureAwait(false);
+
             return new UsenetBodyResponse()
             {
                 ResponseCode = responseCode,
@@ -162,6 +165,9 @@ public partial class UsenetClient
                         pipe.Reader.AsStream(), headersCompletion.Task),
                 };
             }
+
+            await DrainUnexpectedMultiLineAsync(responseCode, operationCts.Token)
+                .ConfigureAwait(false);
 
             return new UsenetDecodedBodyResponse
             {

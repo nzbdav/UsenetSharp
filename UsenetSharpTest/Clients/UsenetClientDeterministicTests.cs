@@ -717,6 +717,81 @@ public class UsenetClientDeterministicTests
     }
 
     [Test]
+    public async Task BodyAsync_UnexpectedMultiLineCode_DrainsPayloadAndKeepsSync()
+    {
+        await using var server = new ScriptedNntpServer(async (command, writer, _) =>
+        {
+            if (command.StartsWith("BODY", StringComparison.Ordinal))
+            {
+                await writer.WriteAsync(
+                    "220 0 <article@example.com>\r\nSubject: x\r\n\r\nbody\r\n.\r\n");
+            }
+            else if (command == "DATE")
+            {
+                await writer.WriteLineAsync("111 20260709213000");
+            }
+        });
+        await using var client = new UsenetClient();
+        await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
+
+        var body = await client.BodyAsync("article@example.com", CancellationToken.None);
+        Assert.That(body.Stream, Is.Null);
+        Assert.That(body.ResponseCode, Is.EqualTo(220));
+        var date = await client.DateAsync(CancellationToken.None);
+        Assert.That(date.ResponseCode, Is.EqualTo(111));
+        Assert.That(client.IsHealthy, Is.True);
+    }
+
+    [Test]
+    public async Task StatAsync_UnexpectedMultiLineCode_DrainsPayloadAndKeepsSync()
+    {
+        await using var server = new ScriptedNntpServer(async (command, writer, _) =>
+        {
+            if (command.StartsWith("STAT", StringComparison.Ordinal))
+            {
+                await writer.WriteAsync("100 Help text follows\r\nhelp line\r\n.\r\n");
+            }
+            else if (command == "DATE")
+            {
+                await writer.WriteLineAsync("111 20260709213000");
+            }
+        });
+        await using var client = new UsenetClient();
+        await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
+
+        var stat = await client.StatAsync("article@example.com", CancellationToken.None);
+        Assert.That(stat.ResponseCode, Is.EqualTo(100));
+        var date = await client.DateAsync(CancellationToken.None);
+        Assert.That(date.ResponseCode, Is.EqualTo(111));
+        Assert.That(client.IsHealthy, Is.True);
+    }
+
+    [Test]
+    public async Task BodyAsync_UnexpectedMultiLineDrainOverflow_PoisonsConnection()
+    {
+        var huge = new string('x', 2048);
+        await using var server = new ScriptedNntpServer(async (_, writer, _) =>
+        {
+            await writer.WriteAsync("220 overflow\r\n");
+            for (var i = 0; i < 8; i++)
+            {
+                await writer.WriteAsync(huge + "\r\n");
+            }
+
+            await writer.WriteAsync(".\r\n");
+        });
+        await using var client = new UsenetClient(new UsenetClientOptions
+        {
+            AbandonedBodyDrainLimit = 1024
+        });
+        await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
+
+        var body = await client.BodyAsync("article@example.com", CancellationToken.None);
+        Assert.That(body.Stream, Is.Null);
+        Assert.That(client.IsHealthy, Is.False);
+    }
+
+    [Test]
     public async Task BodyAsync_UnterminatedBodyLineAtEof_FailsWithoutEmittingPartialLine()
     {
         await using var server = new ScriptedNntpServer(async (_, writer, _) =>
