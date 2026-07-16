@@ -717,6 +717,23 @@ public class UsenetClientDeterministicTests
     }
 
     [Test]
+    public async Task DecodedBodiesAsync_ExceedingMaxPipelineDepth_ThrowsBeforeWriting()
+    {
+        await using var server = new ScriptedNntpServer((_, _, _) => Task.CompletedTask);
+        await using var client = new UsenetClient(new UsenetClientOptions
+        {
+            MaxPipelineDepth = 2
+        });
+        await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
+
+        Assert.ThrowsAsync<ArgumentException>(() => client.DecodedBodiesAsync(
+            new SegmentId[] { "a@example.com", "b@example.com", "c@example.com" },
+            CancellationToken.None));
+        Assert.That(server.Commands, Is.Empty);
+        Assert.That(client.IsHealthy, Is.True);
+    }
+
+    [Test]
     public async Task HeadAsync_BlankLineInHeaders_ConsumesTerminatorAndKeepsSync()
     {
         await using var server = new ScriptedNntpServer(async (command, writer, _) =>

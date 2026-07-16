@@ -30,6 +30,12 @@ public partial class UsenetClient : IUsenetClient, IDisposable, IAsyncDisposable
                 nameof(options), "AbandonedBodyDrainLimit cannot be negative.");
         }
 
+        if (options.MaxPipelineDepth < 1)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options), "MaxPipelineDepth must be at least 1.");
+        }
+
         if (!Enum.IsDefined(options.CertificateRevocationCheckMode))
         {
             throw new ArgumentOutOfRangeException(

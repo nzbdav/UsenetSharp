@@ -18,6 +18,15 @@ public sealed record UsenetClientOptions
     public long AbandonedBodyDrainLimit { get; init; } = 1024 * 1024;
 
     /// <summary>
+    /// Gets the maximum number of BODY commands that may be pipelined in one batch.
+    /// </summary>
+    /// <remarks>
+    /// Defaults to 64 to stay within the RFC 3977 §3.5 TCP-window caution (~4 KiB)
+    /// for typical message-id lengths. Larger batches must be split by the caller.
+    /// </remarks>
+    public int MaxPipelineDepth { get; init; } = 64;
+
+    /// <summary>
     /// Gets whether <see cref="UsenetClient.DecodedBodyAsync(UsenetSharp.Models.SegmentId, CancellationToken)"/>
     /// validates decoded content against the CRC32 value in the yEnc trailer.
     /// </summary>
