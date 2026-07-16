@@ -142,7 +142,30 @@ public partial class UsenetClient
 
             if (string.IsNullOrEmpty(line))
             {
-                // Save the last header if any
+                if (allowDotTerminator)
+                {
+                    // Malformed blank line inside a 221 block. Skip until the
+                    // real terminator so the connection stays at a command boundary.
+                    while (await ReadLineAsync(cancellationToken).ConfigureAwait(false) is { } extra
+                           && extra != ".")
+                    {
+                        totalHeaderBytes += Encoding.Latin1.GetByteCount(extra) + 2;
+                        if (totalHeaderBytes > 256 * 1024)
+                        {
+                            throw new UsenetProtocolException(
+                                "NNTP article headers exceeded the 256 KiB limit.");
+                        }
+                    }
+
+                    if (currentHeaderName != null)
+                    {
+                        headers[currentHeaderName] = currentHeaderValue.ToString().Trim();
+                    }
+
+                    break;
+                }
+
+                // ARTICLE mode: blank line legitimately ends the header block.
                 if (currentHeaderName != null)
                 {
                     headers[currentHeaderName] = currentHeaderValue.ToString().Trim();

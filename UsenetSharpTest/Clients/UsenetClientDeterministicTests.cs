@@ -717,6 +717,35 @@ public class UsenetClientDeterministicTests
     }
 
     [Test]
+    public async Task HeadAsync_BlankLineInHeaders_ConsumesTerminatorAndKeepsSync()
+    {
+        await using var server = new ScriptedNntpServer(async (command, writer, _) =>
+        {
+            if (command.StartsWith("HEAD", StringComparison.Ordinal))
+            {
+                await writer.WriteAsync(
+                    "221 0 <article@example.com>\r\n" +
+                    "Header-A: 1\r\n" +
+                    "\r\n" +
+                    "Header-B: 2\r\n" +
+                    ".\r\n");
+            }
+            else if (command.StartsWith("STAT", StringComparison.Ordinal))
+            {
+                await writer.WriteLineAsync("223 0 <article@example.com>");
+            }
+        });
+        await using var client = new UsenetClient();
+        await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
+
+        var head = await client.HeadAsync("article@example.com", CancellationToken.None);
+        Assert.That(head.ArticleHeaders!.Headers["Header-A"], Is.EqualTo("1"));
+        var stat = await client.StatAsync("article@example.com", CancellationToken.None);
+        Assert.That(stat.ArticleExists, Is.True);
+        Assert.That(client.IsHealthy, Is.True);
+    }
+
+    [Test]
     public async Task BodyAsync_UnexpectedMultiLineCode_DrainsPayloadAndKeepsSync()
     {
         await using var server = new ScriptedNntpServer(async (command, writer, _) =>
