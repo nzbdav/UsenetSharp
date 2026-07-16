@@ -69,6 +69,30 @@ public partial class UsenetClient
         throw new UsenetProtocolException($"Invalid NNTP Response: {response}");
     }
 
+    /// <summary>
+    /// Writes a single-line command and reads its status line. Any failure after
+    /// command bytes may be on the wire poisons the session (RFC 3977 §3.5).
+    /// </summary>
+    private async ValueTask<(int Code, string Line)> ExchangeSingleLineAsync(
+        Func<CancellationToken, ValueTask> writeCommand,
+        CancellationToken token)
+    {
+        try
+        {
+            await writeCommand(token).ConfigureAwait(false);
+            var line = await ReadLineAsync(token).ConfigureAwait(false)
+                ?? throw new UsenetProtocolException(
+                    "The NNTP connection closed before a response was received.");
+            return (ParseResponseCode(line), line);
+        }
+        catch (Exception e)
+        {
+            // Once bytes may be on the wire the response FIFO cannot be trusted.
+            RecordConnectionFailure(e);
+            throw;
+        }
+    }
+
     private void ThrowIfNotConnected()
     {
         if (_writer == null || _reader == null || _tcpClient == null || !_tcpClient.Connected)

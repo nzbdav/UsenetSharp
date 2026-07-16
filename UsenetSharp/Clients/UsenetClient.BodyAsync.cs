@@ -48,11 +48,9 @@ public partial class UsenetClient
             ThrowIfNotConnected();
             operationCts = CreateOperationTokenSource(cancellationToken);
 
-            // Send BODY command with message-id
-            await WriteMessageIdCommandAsync("BODY", segmentId, operationCts.Token)
-                .ConfigureAwait(false);
-            var response = await ReadLineAsync(operationCts.Token).ConfigureAwait(false);
-            var responseCode = ParseResponseCode(response);
+            var (responseCode, response) = await ExchangeSingleLineAsync(
+                ct => WriteMessageIdCommandAsync("BODY", segmentId, ct),
+                operationCts.Token).ConfigureAwait(false);
 
             // Article retrieved - body follows
             if (responseCode == (int)UsenetResponseType.ArticleRetrievedBodyFollows)
@@ -73,7 +71,7 @@ public partial class UsenetClient
                 {
                     SegmentId = segmentId,
                     ResponseCode = responseCode,
-                    ResponseMessage = response!,
+                    ResponseMessage = response,
                     Stream = pipe.Reader.AsStream(),
                 };
             }
@@ -81,7 +79,7 @@ public partial class UsenetClient
             return new UsenetBodyResponse()
             {
                 ResponseCode = responseCode,
-                ResponseMessage = response!,
+                ResponseMessage = response,
                 SegmentId = segmentId,
                 Stream = null
             };
@@ -133,10 +131,9 @@ public partial class UsenetClient
             ThrowIfNotConnected();
             operationCts = CreateOperationTokenSource(cancellationToken);
 
-            await WriteMessageIdCommandAsync("BODY", segmentId, operationCts.Token)
-                .ConfigureAwait(false);
-            var response = await ReadLineAsync(operationCts.Token).ConfigureAwait(false);
-            var responseCode = ParseResponseCode(response);
+            var (responseCode, response) = await ExchangeSingleLineAsync(
+                ct => WriteMessageIdCommandAsync("BODY", segmentId, ct),
+                operationCts.Token).ConfigureAwait(false);
 
             if (responseCode == (int)UsenetResponseType.ArticleRetrievedBodyFollows)
             {
@@ -160,7 +157,7 @@ public partial class UsenetClient
                 {
                     SegmentId = segmentId,
                     ResponseCode = responseCode,
-                    ResponseMessage = response!,
+                    ResponseMessage = response,
                     Stream = new YencStream(
                         pipe.Reader.AsStream(), headersCompletion.Task),
                 };
@@ -169,7 +166,7 @@ public partial class UsenetClient
             return new UsenetDecodedBodyResponse
             {
                 ResponseCode = responseCode,
-                ResponseMessage = response!,
+                ResponseMessage = response,
                 SegmentId = segmentId,
                 Stream = null
             };
@@ -404,14 +401,14 @@ public partial class UsenetClient
             if (drainFailure != null)
             {
                 connectionReusable = false;
-                RecordBackgroundFailure(drainFailure);
+                RecordConnectionFailure(drainFailure);
             }
         }
         catch (Exception e)
         {
             failure = e;
             connectionReusable = false;
-            RecordBackgroundFailure(e);
+            RecordConnectionFailure(e);
         }
         finally
         {
@@ -662,13 +659,13 @@ public partial class UsenetClient
             var drainFailure = await TryDrainBodyAsync().ConfigureAwait(false);
             if (drainFailure != null)
             {
-                RecordBackgroundFailure(drainFailure);
+                RecordConnectionFailure(drainFailure);
             }
         }
         catch (Exception e)
         {
             failure = e;
-            RecordBackgroundFailure(e);
+            RecordConnectionFailure(e);
         }
         finally
         {
@@ -735,7 +732,7 @@ public partial class UsenetClient
         }
     }
 
-    private void RecordBackgroundFailure(Exception failure)
+    private void RecordConnectionFailure(Exception failure)
     {
         lock (_stateLock)
         {

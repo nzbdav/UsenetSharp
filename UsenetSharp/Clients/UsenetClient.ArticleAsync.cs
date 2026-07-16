@@ -41,17 +41,23 @@ public partial class UsenetClient
             ThrowIfNotConnected();
             operationCts = CreateOperationTokenSource(cancellationToken);
 
-            // Send ARTICLE command with message-id
-            await WriteMessageIdCommandAsync("ARTICLE", segmentId, operationCts.Token)
-                .ConfigureAwait(false);
-            var response = await ReadLineAsync(operationCts.Token).ConfigureAwait(false);
-            var responseCode = ParseResponseCode(response);
+            var (responseCode, response) = await ExchangeSingleLineAsync(
+                ct => WriteMessageIdCommandAsync("ARTICLE", segmentId, ct),
+                operationCts.Token).ConfigureAwait(false);
 
             // Article retrieved - head and body follow
             if (responseCode == (int)UsenetResponseType.ArticleRetrievedHeadAndBodyFollow)
             {
-                // Parse headers
-                var headers = await ParseArticleHeadersAsync(operationCts.Token).ConfigureAwait(false);
+                UsenetArticleHeader headers;
+                try
+                {
+                    headers = await ParseArticleHeadersAsync(operationCts.Token).ConfigureAwait(false);
+                }
+                catch (Exception e)
+                {
+                    RecordConnectionFailure(e);
+                    throw;
+                }
 
                 // Create a pipe for streaming the body data
                 var pipe = new Pipe(new PipeOptions(
@@ -69,7 +75,7 @@ public partial class UsenetClient
                 {
                     SegmentId = segmentId,
                     ResponseCode = responseCode,
-                    ResponseMessage = response!,
+                    ResponseMessage = response,
                     ArticleHeaders = headers,
                     Stream = pipe.Reader.AsStream(),
                 };
@@ -78,7 +84,7 @@ public partial class UsenetClient
             return new UsenetArticleResponse()
             {
                 ResponseCode = responseCode,
-                ResponseMessage = response!,
+                ResponseMessage = response,
                 SegmentId = segmentId,
                 Stream = null,
                 ArticleHeaders = null

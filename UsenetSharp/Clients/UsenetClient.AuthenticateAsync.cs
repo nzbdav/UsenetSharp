@@ -17,30 +17,28 @@ public partial class UsenetClient
             ThrowIfNotConnected();
             using var operationCts = CreateOperationTokenSource(cancellationToken);
 
-            // Send AUTHINFO USER command
-            await WriteLineAsync($"AUTHINFO USER {user}".AsMemory(), operationCts.Token).ConfigureAwait(false);
-            var userResponse = await ReadLineAsync(operationCts.Token).ConfigureAwait(false);
-            var userResponseCode = ParseResponseCode(userResponse);
+            var (userResponseCode, userResponse) = await ExchangeSingleLineAsync(
+                ct => new ValueTask(WriteLineAsync($"AUTHINFO USER {user}".AsMemory(), ct)),
+                operationCts.Token).ConfigureAwait(false);
 
             // Password required
             if (userResponseCode == (int)UsenetResponseType.PasswordRequired)
             {
-                // Send AUTHINFO PASS command
-                await WriteLineAsync($"AUTHINFO PASS {pass}".AsMemory(), operationCts.Token).ConfigureAwait(false);
-                var passResponse = await ReadLineAsync(operationCts.Token).ConfigureAwait(false);
-                var passResponseCode = ParseResponseCode(passResponse);
+                var (passResponseCode, passResponse) = await ExchangeSingleLineAsync(
+                    ct => new ValueTask(WriteLineAsync($"AUTHINFO PASS {pass}".AsMemory(), ct)),
+                    operationCts.Token).ConfigureAwait(false);
 
                 return new UsenetResponse()
                 {
                     ResponseCode = passResponseCode,
-                    ResponseMessage = passResponse!,
+                    ResponseMessage = passResponse,
                 };
             }
 
             return new UsenetResponse()
             {
                 ResponseCode = userResponseCode,
-                ResponseMessage = userResponse!,
+                ResponseMessage = userResponse,
             };
         }
         finally

@@ -15,17 +15,17 @@ public partial class UsenetClient
             ThrowIfNotConnected();
             using var operationCts = CreateOperationTokenSource(cancellationToken);
 
-            await WriteCommandAsync(DateCommand, operationCts.Token).ConfigureAwait(false);
-            var response = await ReadLineAsync(operationCts.Token).ConfigureAwait(false);
-            var responseCode = ParseResponseCode(response);
+            var (responseCode, response) = await ExchangeSingleLineAsync(
+                ct => WriteCommandAsync(DateCommand, ct),
+                operationCts.Token).ConfigureAwait(false);
 
             // Response code 111 means success
             return new UsenetDateResponse
             {
                 ResponseCode = responseCode,
-                ResponseMessage = response!,
+                ResponseMessage = response,
                 DateTime = responseCode == (int)UsenetResponseType.DateAndTime
-                    ? ParseNntpDateTime(response!)
+                    ? ParseNntpDateTime(response)
                     : null
             };
         }

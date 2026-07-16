@@ -17,24 +17,30 @@ public partial class UsenetClient
             ThrowIfNotConnected();
             using var operationCts = CreateOperationTokenSource(cancellationToken);
 
-            // Send HEAD command with message-id
-            await WriteMessageIdCommandAsync("HEAD", segmentId, operationCts.Token)
-                .ConfigureAwait(false);
-            var response = await ReadLineAsync(operationCts.Token).ConfigureAwait(false);
-            var responseCode = ParseResponseCode(response);
+            var (responseCode, response) = await ExchangeSingleLineAsync(
+                ct => WriteMessageIdCommandAsync("HEAD", segmentId, ct),
+                operationCts.Token).ConfigureAwait(false);
 
             // Article retrieved - head follows (multi-line)
             if (responseCode == (int)UsenetResponseType.ArticleRetrievedHeadFollows)
             {
-                // Parse headers
-                var headers = await ParseArticleHeadersAsync(operationCts.Token, allowDotTerminator: true)
-                    .ConfigureAwait(false);
+                UsenetArticleHeader headers;
+                try
+                {
+                    headers = await ParseArticleHeadersAsync(operationCts.Token, allowDotTerminator: true)
+                        .ConfigureAwait(false);
+                }
+                catch (Exception e)
+                {
+                    RecordConnectionFailure(e);
+                    throw;
+                }
 
                 return new UsenetHeadResponse
                 {
                     SegmentId = segmentId,
                     ResponseCode = responseCode,
-                    ResponseMessage = response!,
+                    ResponseMessage = response,
                     ArticleHeaders = headers
                 };
             }
@@ -42,7 +48,7 @@ public partial class UsenetClient
             return new UsenetHeadResponse
             {
                 ResponseCode = responseCode,
-                ResponseMessage = response!,
+                ResponseMessage = response,
                 SegmentId = segmentId,
                 ArticleHeaders = null
             };

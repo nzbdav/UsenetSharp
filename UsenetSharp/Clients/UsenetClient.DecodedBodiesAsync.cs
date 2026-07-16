@@ -96,7 +96,7 @@ public partial class UsenetClient
         {
             if (commandsWritten > 0)
             {
-                RecordBackgroundFailure(exception);
+                RecordConnectionFailure(exception);
             }
 
             throw;
@@ -192,7 +192,7 @@ public partial class UsenetClient
                     .ConfigureAwait(false);
                 if (drainFailure != null)
                 {
-                    RecordBackgroundFailure(drainFailure);
+                    RecordConnectionFailure(drainFailure);
                 }
 
                 completionResult =
@@ -213,7 +213,7 @@ public partial class UsenetClient
                 .ConfigureAwait(false);
             if (drainFailure != null)
             {
-                RecordBackgroundFailure(drainFailure);
+                RecordConnectionFailure(drainFailure);
             }
 
             completionResult = drainFailure == null
@@ -224,7 +224,7 @@ public partial class UsenetClient
         {
             failure = exception;
             completionResult = ArticleBodyResult.NotRetrieved;
-            RecordBackgroundFailure(exception);
+            RecordConnectionFailure(exception);
         }
         finally
         {
