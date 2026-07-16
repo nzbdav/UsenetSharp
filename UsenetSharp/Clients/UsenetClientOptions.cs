@@ -31,10 +31,26 @@ public sealed record UsenetClientOptions
     /// validates decoded content against the CRC32 value in the yEnc trailer.
     /// </summary>
     /// <remarks>
-    /// Disabled by default for backward compatibility. When enabled, a missing or
-    /// mismatched CRC32 value fails the decoded response stream.
+    /// Disabled by default for backward compatibility. Prefer
+    /// <see cref="CrcValidation"/> for the tri-state modes.
     /// </remarks>
-    public bool ValidateDecodedBodyCrc32 { get; init; }
+    [Obsolete("Use CrcValidation instead.")]
+    public bool ValidateDecodedBodyCrc32
+    {
+        get => CrcValidation != YencCrcValidationMode.Off;
+        init => CrcValidation = value
+            ? YencCrcValidationMode.Require
+            : YencCrcValidationMode.Off;
+    }
+
+    /// <summary>
+    /// Gets how decoded yEnc CRC32 trailer fields are validated.
+    /// </summary>
+    /// <remarks>
+    /// Defaults to <see cref="YencCrcValidationMode.Off"/> for backward compatibility.
+    /// Planned to default to <see cref="YencCrcValidationMode.WhenPresent"/> in a future major release.
+    /// </remarks>
+    public YencCrcValidationMode CrcValidation { get; init; } = YencCrcValidationMode.Off;
 
     /// <summary>
     /// Gets whether authentication is refused on non-TLS connections.

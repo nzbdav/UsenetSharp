@@ -313,7 +313,7 @@ public class UsenetClientDeterministicTests
                 multipart: true));
         await using var client = new UsenetClient(new UsenetClientOptions
         {
-            ValidateDecodedBodyCrc32 = true
+            CrcValidation = YencCrcValidationMode.Require
         });
         await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
 
@@ -335,7 +335,7 @@ public class UsenetClientDeterministicTests
                 writer, expected, $"size={expected.Length} crc32={incorrectCrc32:x8}"));
         await using var client = new UsenetClient(new UsenetClientOptions
         {
-            ValidateDecodedBodyCrc32 = true
+            CrcValidation = YencCrcValidationMode.Require
         });
         await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
         var completion = new TaskCompletionSource<ArticleBodyResult>(
@@ -359,7 +359,7 @@ public class UsenetClientDeterministicTests
             await WriteYencArticleAsync(writer, expected, $"size={expected.Length}"));
         await using var client = new UsenetClient(new UsenetClientOptions
         {
-            ValidateDecodedBodyCrc32 = true
+            CrcValidation = YencCrcValidationMode.Require
         });
         await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
 

@@ -265,13 +265,13 @@ public partial class UsenetClient
                             encodedBuffer.AsMemory(0, encodedLength),
                             decoderState,
                             decodedCrc32,
-                            _options.ValidateDecodedBodyCrc32,
+                            _options.CrcValidation != YencCrcValidationMode.Off,
                             cancellationToken).ConfigureAwait(false);
                         decoderState = flush.DecoderState;
                         decodedCrc32 = flush.Crc32;
                     }
 
-                    if (_options.ValidateDecodedBodyCrc32 && !dataEnded)
+                    if (_options.CrcValidation == YencCrcValidationMode.Require && !dataEnded)
                     {
                         throw new InvalidDataException(
                             "Reached end of NNTP body without finding a yEnc trailer.");
@@ -352,7 +352,7 @@ public partial class UsenetClient
                             encodedBuffer.AsMemory(0, encodedLength),
                             decoderState,
                             decodedCrc32,
-                            _options.ValidateDecodedBodyCrc32,
+                            _options.CrcValidation != YencCrcValidationMode.Off,
                             cancellationToken).ConfigureAwait(false);
                         encodedLength = 0;
                         decoderState = flush.DecoderState;
@@ -360,10 +360,10 @@ public partial class UsenetClient
                         shouldWrite = !flush.Result.IsCompleted && !flush.Result.IsCanceled;
                     }
 
-                    if (_options.ValidateDecodedBodyCrc32 && shouldWrite)
+                    if (_options.CrcValidation != YencCrcValidationMode.Off && shouldWrite)
                     {
                         ValidateDecodedBodyCrc32(
-                            lineBytes.Span, isMultipart, decodedCrc32);
+                            lineBytes.Span, isMultipart, decodedCrc32, _options.CrcValidation);
                     }
 
                     continue;
@@ -378,7 +378,7 @@ public partial class UsenetClient
                         encodedBuffer.AsMemory(0, encodedLength),
                         decoderState,
                         decodedCrc32,
-                        _options.ValidateDecodedBodyCrc32,
+                        _options.CrcValidation != YencCrcValidationMode.Off,
                         cancellationToken).ConfigureAwait(false);
                     encodedLength = 0;
                     decoderState = flush.DecoderState;
@@ -408,7 +408,7 @@ public partial class UsenetClient
                         encodedBuffer.AsMemory(0, encodedLength),
                         decoderState,
                         decodedCrc32,
-                        _options.ValidateDecodedBodyCrc32,
+                        _options.CrcValidation != YencCrcValidationMode.Off,
                         cancellationToken).ConfigureAwait(false);
                     encodedLength = 0;
                     decoderState = flush.DecoderState;
@@ -508,11 +508,17 @@ public partial class UsenetClient
     private static void ValidateDecodedBodyCrc32(
         ReadOnlySpan<byte> yendLine,
         bool isMultipart,
-        uint actualCrc32)
+        uint actualCrc32,
+        YencCrcValidationMode mode)
     {
         var fieldName = isMultipart ? "pcrc32"u8 : "crc32"u8;
         if (!TryParseYencTrailerCrc32(yendLine, fieldName, out var expectedCrc32))
         {
+            if (mode == YencCrcValidationMode.WhenPresent)
+            {
+                return;
+            }
+
             throw new InvalidDataException(
                 $"The yEnc trailer does not contain a valid {Encoding.ASCII.GetString(fieldName)} value.");
         }
