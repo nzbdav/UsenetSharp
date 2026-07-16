@@ -86,6 +86,22 @@ public class UsenetClientDeterministicTests
     }
 
     [Test]
+    public async Task AuthenticateAsync_RequireTls_RejectsPlaintextBeforeWriting()
+    {
+        await using var server = new ScriptedNntpServer((_, _, _) => Task.CompletedTask);
+        await using var client = new UsenetClient(new UsenetClientOptions
+        {
+            RequireTlsForAuthentication = true
+        });
+        await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
+
+        Assert.ThrowsAsync<InvalidOperationException>(() =>
+            client.AuthenticateAsync("user", "pass", CancellationToken.None));
+        Assert.That(server.Commands, Is.Empty);
+        Assert.That(client.IsHealthy, Is.True);
+    }
+
+    [Test]
     public async Task AuthenticateAsync_RejectsOversizedAndSpacedUsername()
     {
         await using var server = new ScriptedNntpServer((_, _, _) => Task.CompletedTask);

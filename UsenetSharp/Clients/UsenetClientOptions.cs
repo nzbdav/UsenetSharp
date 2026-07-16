@@ -37,6 +37,16 @@ public sealed record UsenetClientOptions
     public bool ValidateDecodedBodyCrc32 { get; init; }
 
     /// <summary>
+    /// Gets whether authentication is refused on non-TLS connections.
+    /// </summary>
+    /// <remarks>
+    /// Defaults to <see langword="false"/> for backward compatibility with plaintext
+    /// test servers. Set to <see langword="true"/> to prevent accidental credential
+    /// disclosure (RFC 4643 §4). Planned to default to true in a future major release.
+    /// </remarks>
+    public bool RequireTlsForAuthentication { get; init; }
+
+    /// <summary>
     /// Gets the certificate revocation mode used when establishing TLS connections.
     /// </summary>
     /// <remarks>
