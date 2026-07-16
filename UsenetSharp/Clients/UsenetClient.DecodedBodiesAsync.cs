@@ -204,9 +204,7 @@ public partial class UsenetClient
                     continue;
                 }
 
-                var pipe = new Pipe(new PipeOptions(
-                    pauseWriterThreshold: 1024 * 1024,
-                    resumeWriterThreshold: 512 * 1024));
+                var pipe = new Pipe(DecodedBodyPipeOptions);
                 var headersCompletion =
                     new TaskCompletionSource<UsenetYencHeader?>(
                         TaskCreationOptions.RunContinuationsAsynchronously);

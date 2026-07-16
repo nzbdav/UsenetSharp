@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.IO.Pipelines;
 using System.Text;
 using UsenetSharp.Exceptions;
 using UsenetSharp.Models;
@@ -8,6 +9,18 @@ namespace UsenetSharp.Clients;
 public partial class UsenetClient
 {
     private static readonly byte[] DateCommand = "DATE\r\n"u8.ToArray();
+
+    private static readonly PipeOptions DecodedBodyPipeOptions = new(
+        pauseWriterThreshold: 1024 * 1024,
+        resumeWriterThreshold: 512 * 1024,
+        minimumSegmentSize: 64 * 1024,
+        useSynchronizationContext: false);
+
+    private static readonly PipeOptions RawBodyPipeOptions = new(
+        pauseWriterThreshold: 1024 * 1024,
+        resumeWriterThreshold: 512 * 1024,
+        minimumSegmentSize: 8 * 1024,
+        useSynchronizationContext: false);
 
     /// <summary>
     /// Replaces the connection stream for deterministic mid-write failure tests.

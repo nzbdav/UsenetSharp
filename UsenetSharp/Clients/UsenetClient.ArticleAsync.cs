@@ -62,9 +62,7 @@ public partial class UsenetClient
                 }
 
                 // Create a pipe for streaming the body data
-                var pipe = new Pipe(new PipeOptions(
-                    pauseWriterThreshold: 1024 * 1024,
-                    resumeWriterThreshold: 512 * 1024));
+                var pipe = new Pipe(RawBodyPipeOptions);
 
                 // Start background task to read the body and write to pipe
                 isReadBodyToPipeAsyncStarted = true;
