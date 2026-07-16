@@ -799,6 +799,46 @@ public class UsenetClientDeterministicTests
         });
     }
 
+    [Test]
+    public async Task CapabilitiesAsync_ParsesLabelsAndDotUnstuffs()
+    {
+        await using var server = new ScriptedNntpServer(async (command, writer, _) =>
+        {
+            Assert.That(command, Is.EqualTo("CAPABILITIES"));
+            await writer.WriteAsync(
+                "101 Capability list follows\r\n" +
+                "VERSION 2\r\n" +
+                "READER\r\n" +
+                "..STUFFED\r\n" +
+                "IHAVE\r\n" +
+                ".\r\n");
+        });
+        await using var client = new UsenetClient();
+        await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
+
+        var response = await client.CapabilitiesAsync(CancellationToken.None);
+        Assert.That(response.ResponseCode, Is.EqualTo(101));
+        Assert.That(response.Capabilities, Is.EqualTo(new[]
+        {
+            "VERSION 2", "READER", ".STUFFED", "IHAVE"
+        }));
+    }
+
+    [Test]
+    public async Task ModeReaderAsync_ReturnsServerReady()
+    {
+        await using var server = new ScriptedNntpServer(async (command, writer, _) =>
+        {
+            Assert.That(command, Is.EqualTo("MODE READER"));
+            await writer.WriteLineAsync("200 Reader mode enabled");
+        });
+        await using var client = new UsenetClient();
+        await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
+
+        var response = await client.ModeReaderAsync(CancellationToken.None);
+        Assert.That(response.ResponseCode, Is.EqualTo(200));
+    }
+
     [TestCase("400 service unavailable", true)]
     [TestCase("502 permission denied", false)]
     public async Task ConnectAsync_GreetingFailure_SetsIsTransient(string greeting, bool isTransient)

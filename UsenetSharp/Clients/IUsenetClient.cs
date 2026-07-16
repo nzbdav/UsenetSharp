@@ -83,4 +83,22 @@ public interface IUsenetClient
         throw new NotSupportedException(
             $"{GetType().Name} does not support QUIT.");
     }
+
+    /// <summary>
+    /// Issues CAPABILITIES and returns the advertised capability labels (RFC 3977 §5.2).
+    /// </summary>
+    Task<UsenetCapabilitiesResponse> CapabilitiesAsync(CancellationToken cancellationToken)
+    {
+        throw new NotSupportedException(
+            $"{GetType().Name} does not support CAPABILITIES.");
+    }
+
+    /// <summary>
+    /// Issues MODE READER for mode-switching servers (RFC 3977 §5.3).
+    /// </summary>
+    Task<UsenetResponse> ModeReaderAsync(CancellationToken cancellationToken)
+    {
+        throw new NotSupportedException(
+            $"{GetType().Name} does not support MODE READER.");
+    }
 }
