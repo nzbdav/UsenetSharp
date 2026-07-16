@@ -32,6 +32,34 @@ public class UsenetClientDeterministicTests
         });
     }
 
+    [TestCase("111 2023121514302")]
+    [TestCase("111 +2031215143022")]
+    [TestCase("111 20231315143022")]
+    public async Task DateAsync_Malformed111Payload_ThrowsProtocolException(string malformed)
+    {
+        await using var server = new ScriptedNntpServer(async (_, writer, _) =>
+            await writer.WriteLineAsync(malformed));
+        await using var client = new UsenetClient();
+        await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
+
+        Assert.ThrowsAsync<UsenetProtocolException>(() => client.DateAsync(CancellationToken.None));
+        Assert.That(client.IsHealthy, Is.False);
+    }
+
+    [Test]
+    public async Task DateAsync_Non111Response_LeavesDateTimeNull()
+    {
+        await using var server = new ScriptedNntpServer(async (_, writer, _) =>
+            await writer.WriteLineAsync("502 Permission denied"));
+        await using var client = new UsenetClient();
+        await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
+
+        var response = await client.DateAsync(CancellationToken.None);
+        Assert.That(response.ResponseCode, Is.EqualTo(502));
+        Assert.That(response.DateTime, Is.Null);
+        Assert.That(client.IsHealthy, Is.True);
+    }
+
     [Test]
     public async Task SegmentId_WithCrLf_IsRejectedBeforeCommandIsSent()
     {
@@ -55,6 +83,45 @@ public class UsenetClientDeterministicTests
         Assert.ThrowsAsync<ArgumentException>(() =>
             client.AuthenticateAsync("user\r\nQUIT", "password", CancellationToken.None));
         Assert.That(server.Commands, Is.Empty);
+    }
+
+    [Test]
+    public async Task AuthenticateAsync_RejectsOversizedAndSpacedUsername()
+    {
+        await using var server = new ScriptedNntpServer((_, _, _) => Task.CompletedTask);
+        await using var client = new UsenetClient();
+        await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
+
+        Assert.ThrowsAsync<ArgumentException>(() =>
+            client.AuthenticateAsync(new string('u', 497), "pass", CancellationToken.None));
+        Assert.ThrowsAsync<ArgumentException>(() =>
+            client.AuthenticateAsync("john smith", "pass", CancellationToken.None));
+        Assert.That(server.Commands, Is.Empty);
+        Assert.That(client.IsHealthy, Is.True);
+    }
+
+    [Test]
+    public async Task AuthenticateAsync_Accepts496CharArgsAndPasswordWithSpace()
+    {
+        await using var server = new ScriptedNntpServer(async (command, writer, _) =>
+        {
+            if (command.StartsWith("AUTHINFO USER", StringComparison.Ordinal))
+            {
+                Assert.That(Encoding.Latin1.GetByteCount(command) + 2, Is.LessThanOrEqualTo(512));
+                await writer.WriteLineAsync("381 Password required");
+            }
+            else if (command.StartsWith("AUTHINFO PASS", StringComparison.Ordinal))
+            {
+                Assert.That(command, Does.Contain("pass word"));
+                await writer.WriteLineAsync("281 Authentication accepted");
+            }
+        });
+        await using var client = new UsenetClient();
+        await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
+
+        var response = await client.AuthenticateAsync(
+            new string('u', 496), "pass word", CancellationToken.None);
+        Assert.That(response.ResponseCode, Is.EqualTo(281));
     }
 
     [Test]
