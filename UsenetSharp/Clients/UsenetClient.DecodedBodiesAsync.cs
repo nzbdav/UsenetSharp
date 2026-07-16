@@ -172,6 +172,10 @@ public partial class UsenetClient
         using var operationCts = CreateOperationTokenSource(callerCancellationToken);
         using var sharedReadTimeout = new CoalescedReadTimeout(
             operationCts.Token, _options.ReadTimeout, _timeProvider);
+        var sharedEncodedBuffer = new BatchDecodeBuffer
+        {
+            Buffer = ArrayPool<byte>.Shared.Rent(DecodedBodyChunkSize + 2)
+        };
 
         try
         {
@@ -221,7 +225,8 @@ public partial class UsenetClient
                         callerCancellationToken,
                         onConnectionReadyAgain: null,
                         releaseCommandLock: false,
-                        sharedReadTimeout: sharedReadTimeout)
+                        sharedReadTimeout: sharedReadTimeout,
+                        sharedEncodedBuffer: sharedEncodedBuffer)
                     .ConfigureAwait(false);
                 if (bodyReadResult.Failure == null)
                 {
@@ -289,6 +294,7 @@ public partial class UsenetClient
         }
         finally
         {
+            ArrayPool<byte>.Shared.Return(sharedEncodedBuffer.Buffer);
             if (failure != null)
             {
                 for (var index = nextResponseIndex; index < completions.Count; index++)

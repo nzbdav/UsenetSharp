@@ -200,13 +200,15 @@ public partial class UsenetClient
         CancellationToken callerCancellationToken,
         Action<ArticleBodyResult>? onConnectionReadyAgain,
         bool releaseCommandLock = true,
-        CoalescedReadTimeout? sharedReadTimeout = null)
+        CoalescedReadTimeout? sharedReadTimeout = null,
+        BatchDecodeBuffer? sharedEncodedBuffer = null)
     {
         Exception? failure = null;
         var connectionReusable = true;
         byte[]? encodedBuffer = null;
         byte[]? ybeginBuffer = null;
         CoalescedReadTimeout? ownedReadTimeout = null;
+        var ownsEncodedBuffer = sharedEncodedBuffer == null;
         try
         {
             if (_reader == null)
@@ -215,7 +217,15 @@ public partial class UsenetClient
                     "The NNTP connection closed before the article body was read.");
             }
 
-            encodedBuffer = ArrayPool<byte>.Shared.Rent(DecodedBodyChunkSize + 2);
+            if (sharedEncodedBuffer != null)
+            {
+                encodedBuffer = sharedEncodedBuffer.Buffer;
+            }
+            else
+            {
+                encodedBuffer = ArrayPool<byte>.Shared.Rent(DecodedBodyChunkSize + 2);
+            }
+
             var encodedLength = 0;
             var shouldWrite = true;
             var dataEnded = false;
@@ -406,6 +416,10 @@ public partial class UsenetClient
                 {
                     ArrayPool<byte>.Shared.Return(encodedBuffer);
                     encodedBuffer = ArrayPool<byte>.Shared.Rent(requiredLength);
+                    if (sharedEncodedBuffer != null)
+                    {
+                        sharedEncodedBuffer.Buffer = encodedBuffer;
+                    }
                 }
 
                 lineBytes.Span.CopyTo(encodedBuffer.AsSpan(encodedLength));
@@ -455,7 +469,7 @@ public partial class UsenetClient
         }
         finally
         {
-            if (encodedBuffer != null)
+            if (ownsEncodedBuffer && encodedBuffer != null)
             {
                 ArrayPool<byte>.Shared.Return(encodedBuffer);
             }
@@ -500,6 +514,11 @@ public partial class UsenetClient
         }
 
         return new DecodedBodyReadResult(failure, connectionReusable);
+    }
+
+    private sealed class BatchDecodeBuffer
+    {
+        public required byte[] Buffer;
     }
 
     private readonly record struct DecodedBodyReadResult(
