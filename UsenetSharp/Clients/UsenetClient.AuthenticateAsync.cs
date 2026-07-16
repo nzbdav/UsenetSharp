@@ -42,10 +42,14 @@ public partial class UsenetClient
             }
 
             using var operationCts = CreateOperationTokenSource(cancellationToken);
+            using var ioTimeout = new CoalescedReadTimeout(
+                operationCts.Token, _options.ReadTimeout, _timeProvider);
 
             var (userResponseCode, userResponse) = await ExchangeSingleLineAsync(
-                ct => new ValueTask(WriteLineAsync($"AUTHINFO USER {user}".AsMemory(), ct)),
-                operationCts.Token).ConfigureAwait(false);
+                ioTimeout,
+                user,
+                static (self, u, timeout) => self.WriteAuthInfoCommandAsync("USER", u, timeout))
+                .ConfigureAwait(false);
             await DrainUnexpectedMultiLineAsync(userResponseCode, operationCts.Token)
                 .ConfigureAwait(false);
 
@@ -53,8 +57,10 @@ public partial class UsenetClient
             if (userResponseCode == (int)UsenetResponseType.PasswordRequired)
             {
                 var (passResponseCode, passResponse) = await ExchangeSingleLineAsync(
-                    ct => new ValueTask(WriteLineAsync($"AUTHINFO PASS {pass}".AsMemory(), ct)),
-                    operationCts.Token).ConfigureAwait(false);
+                    ioTimeout,
+                    pass,
+                    static (self, p, timeout) => self.WriteAuthInfoCommandAsync("PASS", p, timeout))
+                    .ConfigureAwait(false);
                 await DrainUnexpectedMultiLineAsync(passResponseCode, operationCts.Token)
                     .ConfigureAwait(false);
 

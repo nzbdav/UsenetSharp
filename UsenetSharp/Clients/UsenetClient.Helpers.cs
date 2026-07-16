@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.IO.Pipelines;
 using System.Text;
 using UsenetSharp.Exceptions;
 using UsenetSharp.Models;
@@ -8,6 +9,18 @@ namespace UsenetSharp.Clients;
 public partial class UsenetClient
 {
     private static readonly byte[] DateCommand = "DATE\r\n"u8.ToArray();
+
+    private static readonly PipeOptions DecodedBodyPipeOptions = new(
+        pauseWriterThreshold: 1024 * 1024,
+        resumeWriterThreshold: 512 * 1024,
+        minimumSegmentSize: 64 * 1024,
+        useSynchronizationContext: false);
+
+    private static readonly PipeOptions RawBodyPipeOptions = new(
+        pauseWriterThreshold: 1024 * 1024,
+        resumeWriterThreshold: 512 * 1024,
+        minimumSegmentSize: 8 * 1024,
+        useSynchronizationContext: false);
 
     /// <summary>
     /// Replaces the connection stream for deterministic mid-write failure tests.
@@ -33,12 +46,10 @@ public partial class UsenetClient
         }
 
         DisposeConnectionResource(_reader);
-        DisposeConnectionResource(_writer);
         DisposeConnectionResource(_stream);
         DisposeConnectionResource(_tcpClient);
 
         _reader = null;
-        _writer = null;
         _stream = null;
         _tcpClient = null;
 
@@ -110,17 +121,19 @@ public partial class UsenetClient
     }
 
     /// <summary>
-    /// Writes a single-line command and reads its status line. Any failure after
-    /// command bytes may be on the wire poisons the session (RFC 3977 §3.5).
+    /// Writes a single-line command and reads its status line through one coalesced
+    /// I/O timeout shared by the write and the read. Any failure after command bytes
+    /// may be on the wire poisons the session (RFC 3977 §3.5).
     /// </summary>
-    private async ValueTask<(int Code, string Line)> ExchangeSingleLineAsync(
-        Func<CancellationToken, ValueTask> writeCommand,
-        CancellationToken token)
+    private async ValueTask<(int Code, string Line)> ExchangeSingleLineAsync<TState>(
+        CoalescedReadTimeout ioTimeout,
+        TState state,
+        Func<UsenetClient, TState, CoalescedReadTimeout, ValueTask> writeCommand)
     {
         try
         {
-            await writeCommand(token).ConfigureAwait(false);
-            var line = await ReadLineAsync(token).ConfigureAwait(false)
+            await writeCommand(this, state, ioTimeout).ConfigureAwait(false);
+            var line = await ReadLineAsync(ioTimeout).ConfigureAwait(false)
                 ?? throw new UsenetProtocolException(
                     "The NNTP connection closed before a response was received.");
             return (ParseResponseCode(line), line);
@@ -135,7 +148,7 @@ public partial class UsenetClient
 
     private void ThrowIfNotConnected()
     {
-        if (_writer == null || _reader == null || _tcpClient == null || !_tcpClient.Connected)
+        if (_reader == null || _tcpClient == null || !_tcpClient.Connected)
         {
             throw new UsenetNotConnectedException("Not connected to server. Call ConnectAsync first.");
         }
@@ -148,12 +161,7 @@ public partial class UsenetClient
 
     private void ThrowIfUnhealthy()
     {
-        Exception? backgroundException;
-        lock (_stateLock)
-        {
-            backgroundException = _backgroundException?.SourceException;
-        }
-
+        var backgroundException = _backgroundException?.SourceException;
         if (backgroundException != null)
         {
             throw new UsenetProtocolException(
@@ -252,23 +260,36 @@ public partial class UsenetClient
         return cts;
     }
 
-    private async Task WriteLineAsync(ReadOnlyMemory<char> line, CancellationToken ct)
+    private ValueTask WriteAuthInfoCommandAsync(
+        ReadOnlySpan<char> keyword,
+        string argument,
+        CoalescedReadTimeout ioTimeout)
     {
-        using var cts = CreateCtsWithTimeout(ct);
+        // "AUTHINFO " + keyword + ' ' + argument + CRLF
+        var length = 9 + keyword.Length + 1 + argument.Length + 2;
+        var buffer = ArrayPool<byte>.Shared.Rent(length);
         try
         {
-            await _writer!.WriteLineAsync(line, cts.Token).ConfigureAwait(false);
+            var destination = buffer.AsSpan(0, length);
+            var written = Encoding.Latin1.GetBytes("AUTHINFO ", destination);
+            written += Encoding.Latin1.GetBytes(keyword, destination[written..]);
+            destination[written++] = (byte)' ';
+            written += Encoding.Latin1.GetBytes(argument, destination[written..]);
+            destination[written++] = (byte)'\r';
+            destination[written++] = (byte)'\n';
+            return WritePooledCommandAsync(buffer, written, ioTimeout);
         }
-        catch (OperationCanceledException) when (cts.Token.IsCancellationRequested && !ct.IsCancellationRequested)
+        catch
         {
-            throw new TimeoutException("Timeout writing to NNTP stream.");
+            ArrayPool<byte>.Shared.Return(buffer);
+            throw;
         }
     }
 
     private ValueTask WriteMessageIdCommandAsync(
         string command,
         SegmentId segmentId,
-        CancellationToken cancellationToken)
+        CoalescedReadTimeout ioTimeout)
     {
         var messageId = segmentId.Value;
         var length = command.Length + messageId.Length + 5;
@@ -283,7 +304,7 @@ public partial class UsenetClient
             destination[written++] = (byte)'>';
             destination[written++] = (byte)'\r';
             destination[written++] = (byte)'\n';
-            return WritePooledCommandAsync(buffer, written, cancellationToken);
+            return WritePooledCommandAsync(buffer, written, ioTimeout);
         }
         catch
         {
@@ -295,20 +316,23 @@ public partial class UsenetClient
     private async ValueTask WritePooledCommandAsync(
         byte[] buffer,
         int length,
-        CancellationToken cancellationToken)
+        CoalescedReadTimeout ioTimeout)
     {
         try
         {
-            using var cts = CreateCtsWithTimeout(cancellationToken);
+            ioTimeout.BeginIo();
             try
             {
-                await _stream!.WriteAsync(buffer.AsMemory(0, length), cts.Token)
+                await _stream!.WriteAsync(buffer.AsMemory(0, length), ioTimeout.Token)
                     .ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (
-                cts.Token.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+            catch (OperationCanceledException) when (ioTimeout.IsTimeoutCancellation)
             {
                 throw new TimeoutException("Timeout writing to NNTP stream.");
+            }
+            finally
+            {
+                ioTimeout.EndIo();
             }
         }
         finally
@@ -333,6 +357,25 @@ public partial class UsenetClient
         }
     }
 
+    private async ValueTask WriteCommandAsync(
+        ReadOnlyMemory<byte> command,
+        CoalescedReadTimeout ioTimeout)
+    {
+        ioTimeout.BeginIo();
+        try
+        {
+            await _stream!.WriteAsync(command, ioTimeout.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ioTimeout.IsTimeoutCancellation)
+        {
+            throw new TimeoutException("Timeout writing to NNTP stream.");
+        }
+        finally
+        {
+            ioTimeout.EndIo();
+        }
+    }
+
     private async ValueTask<string?> ReadLineAsync(CancellationToken ct)
     {
         using var cts = CreateCtsWithTimeout(ct);
@@ -346,10 +389,27 @@ public partial class UsenetClient
         }
     }
 
+    private async ValueTask<string?> ReadLineAsync(CoalescedReadTimeout ioTimeout)
+    {
+        ioTimeout.BeginIo();
+        try
+        {
+            return await _reader!.ReadLineAsync(ioTimeout.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ioTimeout.IsTimeoutCancellation)
+        {
+            throw new TimeoutException("Timeout reading from NNTP stream.");
+        }
+        finally
+        {
+            ioTimeout.EndIo();
+        }
+    }
+
     private async ValueTask<ReadOnlyMemory<byte>?> ReadLineBytesAsync(
         CoalescedReadTimeout readTimeout)
     {
-        readTimeout.BeginRead();
+        readTimeout.BeginIo();
         try
         {
             return await _reader!.ReadLineBytesAsync(readTimeout.Token).ConfigureAwait(false);
@@ -360,7 +420,7 @@ public partial class UsenetClient
         }
         finally
         {
-            readTimeout.EndRead();
+            readTimeout.EndIo();
         }
     }
 

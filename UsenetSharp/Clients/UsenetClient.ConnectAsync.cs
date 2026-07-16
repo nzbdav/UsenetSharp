@@ -1,6 +1,5 @@
 using System.Net.Security;
 using System.Net.Sockets;
-using System.Text;
 using UsenetSharp.Exceptions;
 using UsenetSharp.Models;
 
@@ -27,8 +26,20 @@ public partial class UsenetClient
             {
                 NoDelay = true
             };
-            _tcpClient.Client.SetSocketOption(
-                SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
+            var socket = _tcpClient.Client;
+            socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
+            socket.SetSocketOption(
+                SocketOptionLevel.Tcp,
+                SocketOptionName.TcpKeepAliveTime,
+                (int)_options.TcpKeepAliveTime.TotalSeconds);
+            socket.SetSocketOption(
+                SocketOptionLevel.Tcp,
+                SocketOptionName.TcpKeepAliveInterval,
+                (int)_options.TcpKeepAliveInterval.TotalSeconds);
+            socket.SetSocketOption(
+                SocketOptionLevel.Tcp,
+                SocketOptionName.TcpKeepAliveRetryCount,
+                _options.TcpKeepAliveRetryCount);
             await _tcpClient.ConnectAsync(host, port, operationCts.Token).ConfigureAwait(false);
             _stream = _tcpClient.GetStream();
 
@@ -47,14 +58,11 @@ public partial class UsenetClient
 
             // Use Latin1 encoding to preserve exact byte values 0-255 for yEnc-encoded content
             _reader = new NntpLineReader(_stream);
-            _writer = new StreamWriter(_stream, Encoding.Latin1)
-            {
-                AutoFlush = true,
-                NewLine = "\r\n"
-            };
 
             // Read the server response
-            var response = await ReadLineAsync(operationCts.Token).ConfigureAwait(false);
+            using var greetingTimeout = new CoalescedReadTimeout(
+                operationCts.Token, _options.ReadTimeout, _timeProvider);
+            var response = await ReadLineAsync(greetingTimeout).ConfigureAwait(false);
             var responseCode = ParseResponseCode(response);
 
             // NNTP servers typically respond with "200" or "201" for successful connection

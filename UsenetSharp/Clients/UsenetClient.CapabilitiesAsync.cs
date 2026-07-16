@@ -27,10 +27,14 @@ public partial class UsenetClient
             ThrowIfUnhealthy();
             ThrowIfNotConnected();
             using var operationCts = CreateOperationTokenSource(cancellationToken);
+            using var ioTimeout = new CoalescedReadTimeout(
+                operationCts.Token, _options.ReadTimeout, _timeProvider);
 
             var (responseCode, response) = await ExchangeSingleLineAsync(
-                ct => WriteCommandAsync(CapabilitiesCommand, ct),
-                operationCts.Token).ConfigureAwait(false);
+                ioTimeout,
+                CapabilitiesCommand,
+                static (self, command, timeout) => self.WriteCommandAsync(command, timeout))
+                .ConfigureAwait(false);
 
             if (responseCode != (int)UsenetResponseType.CapabilityListFollows)
             {
@@ -90,10 +94,14 @@ public partial class UsenetClient
             ThrowIfUnhealthy();
             ThrowIfNotConnected();
             using var operationCts = CreateOperationTokenSource(cancellationToken);
+            using var ioTimeout = new CoalescedReadTimeout(
+                operationCts.Token, _options.ReadTimeout, _timeProvider);
 
             var (responseCode, response) = await ExchangeSingleLineAsync(
-                ct => WriteCommandAsync(ModeReaderCommand, ct),
-                operationCts.Token).ConfigureAwait(false);
+                ioTimeout,
+                ModeReaderCommand,
+                static (self, command, timeout) => self.WriteCommandAsync(command, timeout))
+                .ConfigureAwait(false);
 
             if (responseCode != (int)UsenetResponseType.ServerReadyPostingAllowed &&
                 responseCode != (int)UsenetResponseType.ServerReadyNoPostingAllowed)

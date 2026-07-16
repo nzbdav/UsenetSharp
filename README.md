@@ -6,9 +6,11 @@ streaming yEnc decoding.
 ## Features
 
 - Asynchronous NNTP connection, authentication, STAT, HEAD, BODY, ARTICLE, and DATE commands
+- `YencHeadersAsync` — probe a segment's yEnc `=ybegin`/`=ypart` metadata (part offset/size) without downloading the body; choose `DrainToReuse` (connection survives, costs the article remainder) or `AbandonConnection` (instant release, costs the connection)
 - TLS with platform certificate validation
 - Incremental, allocation-conscious yEnc decoding through RapidYencSharp
 - Read-only, non-seekable response streams with cancellation support
+- Configurable cancellation policy: drain-to-reuse (default) or abandon-and-reconnect for seek-heavy workloads
 - Serialized commands per connection; use multiple clients for parallel downloads
 
 ## Installation

@@ -13,6 +13,7 @@ namespace UsenetSharp.Clients;
 public partial class UsenetClient
 {
     private const int DecodedBodyChunkSize = 64 * 1024;
+    private const int RawBodyFlushThreshold = 8 * 1024;
 
     public Task<UsenetBodyResponse> BodyAsync(SegmentId segmentId, CancellationToken cancellationToken)
     {
@@ -47,18 +48,20 @@ public partial class UsenetClient
             ThrowIfUnhealthy();
             ThrowIfNotConnected();
             operationCts = CreateOperationTokenSource(cancellationToken);
+            using var ioTimeout = new CoalescedReadTimeout(
+                operationCts.Token, _options.ReadTimeout, _timeProvider);
 
             var (responseCode, response) = await ExchangeSingleLineAsync(
-                ct => WriteMessageIdCommandAsync("BODY", segmentId, ct),
-                operationCts.Token).ConfigureAwait(false);
+                ioTimeout,
+                segmentId,
+                static (self, id, timeout) => self.WriteMessageIdCommandAsync("BODY", id, timeout))
+                .ConfigureAwait(false);
 
             // Article retrieved - body follows
             if (responseCode == (int)UsenetResponseType.ArticleRetrievedBodyFollows)
             {
                 // Create a pipe for streaming the body data
-                var pipe = new Pipe(new PipeOptions(
-                    pauseWriterThreshold: 1024 * 1024,
-                    resumeWriterThreshold: 512 * 1024));
+                var pipe = new Pipe(RawBodyPipeOptions);
 
                 // Start background task to read the body and write to pipe
                 isReadBodyToPipeAsyncStarted = true;
@@ -133,16 +136,18 @@ public partial class UsenetClient
             ThrowIfUnhealthy();
             ThrowIfNotConnected();
             operationCts = CreateOperationTokenSource(cancellationToken);
+            using var ioTimeout = new CoalescedReadTimeout(
+                operationCts.Token, _options.ReadTimeout, _timeProvider);
 
             var (responseCode, response) = await ExchangeSingleLineAsync(
-                ct => WriteMessageIdCommandAsync("BODY", segmentId, ct),
-                operationCts.Token).ConfigureAwait(false);
+                ioTimeout,
+                segmentId,
+                static (self, id, timeout) => self.WriteMessageIdCommandAsync("BODY", id, timeout))
+                .ConfigureAwait(false);
 
             if (responseCode == (int)UsenetResponseType.ArticleRetrievedBodyFollows)
             {
-                var pipe = new Pipe(new PipeOptions(
-                    pauseWriterThreshold: 1024 * 1024,
-                    resumeWriterThreshold: 512 * 1024));
+                var pipe = new Pipe(DecodedBodyPipeOptions);
                 var headersCompletion =
                     new TaskCompletionSource<UsenetYencHeader?>(
                         TaskCreationOptions.RunContinuationsAsynchronously);
@@ -194,12 +199,16 @@ public partial class UsenetClient
         CancellationTokenSource operationCts,
         CancellationToken callerCancellationToken,
         Action<ArticleBodyResult>? onConnectionReadyAgain,
-        bool releaseCommandLock = true)
+        bool releaseCommandLock = true,
+        CoalescedReadTimeout? sharedReadTimeout = null,
+        BatchDecodeBuffer? sharedEncodedBuffer = null)
     {
         Exception? failure = null;
         var connectionReusable = true;
         byte[]? encodedBuffer = null;
         byte[]? ybeginBuffer = null;
+        CoalescedReadTimeout? ownedReadTimeout = null;
+        var ownsEncodedBuffer = sharedEncodedBuffer == null;
         try
         {
             if (_reader == null)
@@ -208,7 +217,15 @@ public partial class UsenetClient
                     "The NNTP connection closed before the article body was read.");
             }
 
-            encodedBuffer = ArrayPool<byte>.Shared.Rent(DecodedBodyChunkSize + 2);
+            if (sharedEncodedBuffer != null)
+            {
+                encodedBuffer = sharedEncodedBuffer.Buffer;
+            }
+            else
+            {
+                encodedBuffer = ArrayPool<byte>.Shared.Rent(DecodedBodyChunkSize + 2);
+            }
+
             var encodedLength = 0;
             var shouldWrite = true;
             var dataEnded = false;
@@ -220,8 +237,13 @@ public partial class UsenetClient
             RapidYencDecoderState? decoderState = RapidYencDecoderState.RYDEC_STATE_CRLF;
             uint decodedCrc32 = 0;
             var cancellationToken = operationCts.Token;
-            using var readTimeout = new CoalescedReadTimeout(
-                cancellationToken, _options.ReadTimeout, _timeProvider);
+            if (sharedReadTimeout == null)
+            {
+                ownedReadTimeout = new CoalescedReadTimeout(
+                    cancellationToken, _options.ReadTimeout, _timeProvider);
+            }
+
+            var readTimeout = sharedReadTimeout ?? ownedReadTimeout!;
 
             while (true)
             {
@@ -394,6 +416,10 @@ public partial class UsenetClient
                 {
                     ArrayPool<byte>.Shared.Return(encodedBuffer);
                     encodedBuffer = ArrayPool<byte>.Shared.Rent(requiredLength);
+                    if (sharedEncodedBuffer != null)
+                    {
+                        sharedEncodedBuffer.Buffer = encodedBuffer;
+                    }
                 }
 
                 lineBytes.Span.CopyTo(encodedBuffer.AsSpan(encodedLength));
@@ -420,11 +446,19 @@ public partial class UsenetClient
         catch (OperationCanceledException e) when (callerCancellationToken.IsCancellationRequested)
         {
             failure = e;
-            var drainFailure = await TryDrainBodyAsync().ConfigureAwait(false);
-            if (drainFailure != null)
+            if (_options.CancellationPolicy == ConnectionReleasePolicy.AbandonConnection)
             {
                 connectionReusable = false;
-                RecordConnectionFailure(drainFailure);
+                RecordConnectionFailure(e);
+            }
+            else
+            {
+                var drainFailure = await TryDrainBodyAsync().ConfigureAwait(false);
+                if (drainFailure != null)
+                {
+                    connectionReusable = false;
+                    RecordConnectionFailure(drainFailure);
+                }
             }
         }
         catch (Exception e)
@@ -435,7 +469,7 @@ public partial class UsenetClient
         }
         finally
         {
-            if (encodedBuffer != null)
+            if (ownsEncodedBuffer && encodedBuffer != null)
             {
                 ArrayPool<byte>.Shared.Return(encodedBuffer);
             }
@@ -451,7 +485,12 @@ public partial class UsenetClient
             }
 
             await writer.CompleteAsync(failure).ConfigureAwait(false);
-            operationCts.Dispose();
+            ownedReadTimeout?.Dispose();
+            if (sharedReadTimeout == null)
+            {
+                operationCts.Dispose();
+            }
+
             if (releaseCommandLock)
             {
                 _commandLock.Release();
@@ -475,6 +514,11 @@ public partial class UsenetClient
         }
 
         return new DecodedBodyReadResult(failure, connectionReusable);
+    }
+
+    private sealed class BatchDecodeBuffer
+    {
+        public required byte[] Buffer;
     }
 
     private readonly record struct DecodedBodyReadResult(
@@ -617,6 +661,7 @@ public partial class UsenetClient
 
             var shouldWrite = true;
             long drainedBytes = 0;
+            var unflushed = 0;
             var cancellationToken = operationCts.Token;
             using var readTimeout = new CoalescedReadTimeout(
                 cancellationToken, _options.ReadTimeout, _timeProvider);
@@ -673,8 +718,23 @@ public partial class UsenetClient
                 destination[line.Length] = (byte)'\r';
                 destination[line.Length + 1] = (byte)'\n';
                 writer.Advance(line.Length + 2);
+                unflushed += line.Length + 2;
 
-                // Each line must become visible promptly so incremental readers can make progress.
+                // Batch flushes (~8 KiB) to cut per-line FlushAsync overhead while keeping
+                // first-byte latency acceptable for small-header readers.
+                if (unflushed >= RawBodyFlushThreshold)
+                {
+                    var result = await writer.FlushAsync(cancellationToken).ConfigureAwait(false);
+                    unflushed = 0;
+                    if (result.IsCompleted || result.IsCanceled)
+                    {
+                        shouldWrite = false;
+                    }
+                }
+            }
+
+            if (shouldWrite && unflushed > 0)
+            {
                 var result = await writer.FlushAsync(cancellationToken).ConfigureAwait(false);
                 if (result.IsCompleted || result.IsCanceled)
                 {
@@ -685,10 +745,17 @@ public partial class UsenetClient
         catch (OperationCanceledException e) when (callerCancellationToken.IsCancellationRequested)
         {
             failure = e;
-            var drainFailure = await TryDrainBodyAsync().ConfigureAwait(false);
-            if (drainFailure != null)
+            if (_options.CancellationPolicy == ConnectionReleasePolicy.AbandonConnection)
             {
-                RecordConnectionFailure(drainFailure);
+                RecordConnectionFailure(e);
+            }
+            else
+            {
+                var drainFailure = await TryDrainBodyAsync().ConfigureAwait(false);
+                if (drainFailure != null)
+                {
+                    RecordConnectionFailure(drainFailure);
+                }
             }
         }
         catch (Exception e)

@@ -40,10 +40,14 @@ public partial class UsenetClient
             ThrowIfUnhealthy();
             ThrowIfNotConnected();
             operationCts = CreateOperationTokenSource(cancellationToken);
+            using var ioTimeout = new CoalescedReadTimeout(
+                operationCts.Token, _options.ReadTimeout, _timeProvider);
 
             var (responseCode, response) = await ExchangeSingleLineAsync(
-                ct => WriteMessageIdCommandAsync("ARTICLE", segmentId, ct),
-                operationCts.Token).ConfigureAwait(false);
+                ioTimeout,
+                segmentId,
+                static (self, id, timeout) => self.WriteMessageIdCommandAsync("ARTICLE", id, timeout))
+                .ConfigureAwait(false);
 
             // Article retrieved - head and body follow
             if (responseCode == (int)UsenetResponseType.ArticleRetrievedHeadAndBodyFollow)
@@ -60,9 +64,7 @@ public partial class UsenetClient
                 }
 
                 // Create a pipe for streaming the body data
-                var pipe = new Pipe(new PipeOptions(
-                    pauseWriterThreshold: 1024 * 1024,
-                    resumeWriterThreshold: 512 * 1024));
+                var pipe = new Pipe(RawBodyPipeOptions);
 
                 // Start background task to read the body and write to pipe
                 isReadBodyToPipeAsyncStarted = true;

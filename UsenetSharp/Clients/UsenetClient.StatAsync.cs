@@ -15,10 +15,14 @@ public partial class UsenetClient
             ThrowIfUnhealthy();
             ThrowIfNotConnected();
             using var operationCts = CreateOperationTokenSource(cancellationToken);
+            using var ioTimeout = new CoalescedReadTimeout(
+                operationCts.Token, _options.ReadTimeout, _timeProvider);
 
             var (responseCode, response) = await ExchangeSingleLineAsync(
-                ct => WriteMessageIdCommandAsync("STAT", segmentId, ct),
-                operationCts.Token).ConfigureAwait(false);
+                ioTimeout,
+                segmentId,
+                static (self, id, timeout) => self.WriteMessageIdCommandAsync("STAT", id, timeout))
+                .ConfigureAwait(false);
 
             if (responseCode != (int)UsenetResponseType.ArticleExists)
             {
