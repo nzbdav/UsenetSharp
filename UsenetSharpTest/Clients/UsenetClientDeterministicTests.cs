@@ -1065,6 +1065,47 @@ public class UsenetClientDeterministicTests
     }
 
     [Test]
+    public async Task HeadAsync_BlankLineThenEof_ThrowsAndPoisonsConnection()
+    {
+        await using var server = new ScriptedNntpServer(async (_, writer, _) =>
+        {
+            await writer.WriteAsync(
+                "221 0 <article@example.com>\r\n" +
+                "Header-A: 1\r\n" +
+                "\r\n");
+            throw new IOException("Close scripted connection.");
+        });
+        await using var client = new UsenetClient();
+        await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
+
+        var exception = Assert.ThrowsAsync<UsenetProtocolException>(() =>
+            client.HeadAsync("article@example.com", CancellationToken.None));
+        Assert.That(exception!.Message, Does.Contain("header terminator"));
+        Assert.That(client.IsHealthy, Is.False);
+    }
+
+    [Test]
+    public async Task HeadAsync_BlankLineThenOversizedJunk_ThrowsAndPoisonsConnection()
+    {
+        var junk = new string('x', 8192);
+        await using var server = new ScriptedNntpServer(async (_, writer, _) =>
+        {
+            await writer.WriteAsync("221 0 <article@example.com>\r\n\r\n");
+            for (var i = 0; i < 40; i++)
+            {
+                await writer.WriteAsync(junk + "\r\n");
+            }
+        });
+        await using var client = new UsenetClient();
+        await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
+
+        var exception = Assert.ThrowsAsync<UsenetProtocolException>(() =>
+            client.HeadAsync("article@example.com", CancellationToken.None));
+        Assert.That(exception!.Message, Does.Contain("256 KiB"));
+        Assert.That(client.IsHealthy, Is.False);
+    }
+
+    [Test]
     public async Task BodyAsync_UnexpectedMultiLineCode_DrainsPayloadAndKeepsSync()
     {
         await using var server = new ScriptedNntpServer(async (command, writer, _) =>
