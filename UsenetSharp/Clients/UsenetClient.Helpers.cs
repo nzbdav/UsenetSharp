@@ -46,12 +46,10 @@ public partial class UsenetClient
         }
 
         DisposeConnectionResource(_reader);
-        DisposeConnectionResource(_writer);
         DisposeConnectionResource(_stream);
         DisposeConnectionResource(_tcpClient);
 
         _reader = null;
-        _writer = null;
         _stream = null;
         _tcpClient = null;
 
@@ -149,7 +147,7 @@ public partial class UsenetClient
 
     private void ThrowIfNotConnected()
     {
-        if (_writer == null || _reader == null || _tcpClient == null || !_tcpClient.Connected)
+        if (_reader == null || _tcpClient == null || !_tcpClient.Connected)
         {
             throw new UsenetNotConnectedException("Not connected to server. Call ConnectAsync first.");
         }
@@ -266,33 +264,29 @@ public partial class UsenetClient
         return cts;
     }
 
-    private async Task WriteLineAsync(ReadOnlyMemory<char> line, CancellationToken ct)
+    private ValueTask WriteAuthInfoCommandAsync(
+        ReadOnlySpan<char> keyword,
+        string argument,
+        CoalescedReadTimeout ioTimeout)
     {
-        using var cts = CreateCtsWithTimeout(ct);
+        // "AUTHINFO " + keyword + ' ' + argument + CRLF
+        var length = 9 + keyword.Length + 1 + argument.Length + 2;
+        var buffer = ArrayPool<byte>.Shared.Rent(length);
         try
         {
-            await _writer!.WriteLineAsync(line, cts.Token).ConfigureAwait(false);
+            var destination = buffer.AsSpan(0, length);
+            var written = Encoding.Latin1.GetBytes("AUTHINFO ", destination);
+            written += Encoding.Latin1.GetBytes(keyword, destination[written..]);
+            destination[written++] = (byte)' ';
+            written += Encoding.Latin1.GetBytes(argument, destination[written..]);
+            destination[written++] = (byte)'\r';
+            destination[written++] = (byte)'\n';
+            return WritePooledCommandAsync(buffer, written, ioTimeout);
         }
-        catch (OperationCanceledException) when (cts.Token.IsCancellationRequested && !ct.IsCancellationRequested)
+        catch
         {
-            throw new TimeoutException("Timeout writing to NNTP stream.");
-        }
-    }
-
-    private async ValueTask WriteLineAsync(ReadOnlyMemory<char> line, CoalescedReadTimeout ioTimeout)
-    {
-        ioTimeout.BeginIo();
-        try
-        {
-            await _writer!.WriteLineAsync(line, ioTimeout.Token).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (ioTimeout.IsTimeoutCancellation)
-        {
-            throw new TimeoutException("Timeout writing to NNTP stream.");
-        }
-        finally
-        {
-            ioTimeout.EndIo();
+            ArrayPool<byte>.Shared.Return(buffer);
+            throw;
         }
     }
 
