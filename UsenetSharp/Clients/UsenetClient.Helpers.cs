@@ -179,7 +179,8 @@ public partial class UsenetClient
     private static void ValidateSegmentId(SegmentId segmentId)
     {
         var value = segmentId.Value;
-        ValidateCommandValue(value, nameof(segmentId), 497);
+        // 250 octets including <> that the client adds (RFC 5536 §3.1.3).
+        ValidateCommandValue(value, nameof(segmentId), 248);
         if (value.Length < 3 || value[0] == '@' || value[^1] == '@' || !value.Contains('@') ||
             value.Contains('<') || value.Contains('>') || ContainsWhitespace(value))
         {

@@ -74,6 +74,36 @@ public class UsenetClientDeterministicTests
     }
 
     [Test]
+    public async Task SegmentId_LengthBounds_MatchRfc5536InteropLimit()
+    {
+        await using var server = new ScriptedNntpServer(async (command, writer, _) =>
+        {
+            if (command == "QUIT")
+            {
+                await writer.WriteLineAsync("205 Connection closing");
+                return;
+            }
+
+            if (command.StartsWith("STAT", StringComparison.Ordinal))
+            {
+                await writer.WriteLineAsync("223 0 <id>");
+            }
+        });
+        await using var client = new UsenetClient();
+        await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
+
+        var accepted = new string('a', 236) + "@example.com"; // 248 chars
+        Assert.That(accepted.Length, Is.EqualTo(248));
+        var response = await client.StatAsync(accepted, CancellationToken.None);
+        Assert.That(response.ArticleExists, Is.True);
+
+        var rejected = accepted + "x";
+        Assert.ThrowsAsync<ArgumentException>(() =>
+            client.StatAsync(rejected, CancellationToken.None));
+        Assert.That(client.IsHealthy, Is.True);
+    }
+
+    [Test]
     public async Task Credentials_WithCrLf_AreRejectedBeforeCommandIsSent()
     {
         await using var server = new ScriptedNntpServer((_, _, _) => Task.CompletedTask);
