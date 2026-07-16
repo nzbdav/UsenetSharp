@@ -54,19 +54,28 @@ public partial class UsenetClient
         }
     }
 
-    private int ParseResponseCode(string? response)
+    private static int ParseResponseCode(string? response)
     {
-        if (string.IsNullOrEmpty(response) || response.Length < 3)
+        if (string.IsNullOrEmpty(response))
         {
-            throw new UsenetProtocolException($"Invalid NNTP Response: {response}");
+            throw new UsenetProtocolException($"Invalid NNTP response: {response}");
         }
 
-        if (int.TryParse(response.AsSpan(0, 3), out var code))
+        return ParseResponseCode(response.AsSpan());
+    }
+
+    private static int ParseResponseCode(ReadOnlySpan<char> response)
+    {
+        if (response.Length < 3 ||
+            response[0] is < '1' or > '5' ||
+            !char.IsAsciiDigit(response[1]) ||
+            !char.IsAsciiDigit(response[2]) ||
+            (response.Length > 3 && response[3] != ' '))
         {
-            return code;
+            throw new UsenetProtocolException($"Invalid NNTP response: {response}");
         }
 
-        throw new UsenetProtocolException($"Invalid NNTP Response: {response}");
+        return (response[0] - '0') * 100 + (response[1] - '0') * 10 + (response[2] - '0');
     }
 
     /// <summary>

@@ -1061,6 +1061,40 @@ public class UsenetClientDeterministicTests
         Assert.That(date.ResponseCode, Is.EqualTo(111));
     }
 
+    [TestCase("+22 hello")]
+    [TestCase(" 22 hello")]
+    [TestCase("22 hello")]
+    [TestCase("999 hello")]
+    public async Task ParseResponseCode_RejectsMalformedStatusLines(string malformed)
+    {
+        await using var server = new ScriptedNntpServer(async (_, writer, _) =>
+            await writer.WriteLineAsync(malformed));
+        await using var client = new UsenetClient();
+        await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
+
+        Assert.ThrowsAsync<UsenetProtocolException>(() =>
+            client.StatAsync("article@example.com", CancellationToken.None));
+        Assert.That(client.IsHealthy, Is.False);
+    }
+
+    [Test]
+    public async Task ParseResponseCode_AcceptsBareThreeDigitCode()
+    {
+        await using var server = new ScriptedNntpServer(async (command, writer, _) =>
+        {
+            if (command.StartsWith("STAT", StringComparison.Ordinal))
+            {
+                await writer.WriteLineAsync("430");
+            }
+        });
+        await using var client = new UsenetClient();
+        await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
+
+        var response = await client.StatAsync("article@example.com", CancellationToken.None);
+        Assert.That(response.ResponseCode, Is.EqualTo(430));
+        Assert.That(client.IsHealthy, Is.True);
+    }
+
     [Test]
     public async Task OversizedResponseLine_IsRejected()
     {
