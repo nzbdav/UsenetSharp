@@ -74,4 +74,13 @@ public interface IUsenetClient
 
     Task WaitForReadyAsync(
         CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Sends QUIT and closes the connection after the server acknowledges (RFC 3977 §5.4).
+    /// </summary>
+    Task<UsenetResponse> QuitAsync(CancellationToken cancellationToken)
+    {
+        throw new NotSupportedException(
+            $"{GetType().Name} does not support QUIT.");
+    }
 }

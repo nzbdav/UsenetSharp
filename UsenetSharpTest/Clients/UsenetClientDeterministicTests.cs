@@ -784,6 +784,41 @@ public class UsenetClientDeterministicTests
     }
 
     [Test]
+    public async Task QuitAsync_ClosesConnectionAfter205()
+    {
+        await using var server = new ScriptedNntpServer(async (command, writer, _) =>
+        {
+            Assert.That(command, Is.EqualTo("QUIT"));
+            await writer.WriteLineAsync("205 Connection closing");
+        });
+        await using var client = new UsenetClient();
+        await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
+
+        var response = await client.QuitAsync(CancellationToken.None);
+        Assert.That(response.ResponseCode, Is.EqualTo((int)UsenetResponseType.ConnectionClosing));
+        Assert.That(client.IsConnected, Is.False);
+    }
+
+    [Test]
+    public async Task DisposeAsync_SendsBestEffortQuitWhenHealthy()
+    {
+        var quitReceived = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var server = new ScriptedNntpServer(async (command, writer, _) =>
+        {
+            if (command == "QUIT")
+            {
+                quitReceived.TrySetResult();
+                await writer.WriteLineAsync("205 Connection closing");
+            }
+        });
+        var client = new UsenetClient();
+        await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
+        await client.DisposeAsync();
+
+        await quitReceived.Task.WaitAsync(TimeSpan.FromSeconds(2));
+    }
+
+    [Test]
     public async Task DecodedBodiesAsync_ExceedingMaxPipelineDepth_ThrowsBeforeWriting()
     {
         await using var server = new ScriptedNntpServer((_, _, _) => Task.CompletedTask);

@@ -103,6 +103,15 @@ public partial class UsenetClient : IUsenetClient, IDisposable, IAsyncDisposable
             return;
         }
 
+        try
+        {
+            await TryQuitBestEffortAsync().ConfigureAwait(false);
+        }
+        catch
+        {
+            // Best-effort only; disposal must proceed.
+        }
+
         CancelConnectionLifetime();
         await _commandLock.WaitAsync().ConfigureAwait(false);
         CleanupConnection(createNewLifetime: false);
