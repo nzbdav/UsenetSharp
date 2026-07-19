@@ -17,6 +17,23 @@ public interface IUsenetClient
     Task<UsenetStatResponse> StatAsync(
         SegmentId segmentId, CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Pipelines STAT existence checks and returns the ordered responses (RFC 3977 §3.5).
+    /// </summary>
+    /// <remarks>
+    /// Responses map one-to-one, in order, to <paramref name="segmentIds"/>. Batches larger than
+    /// <see cref="UsenetClientOptions.MaxPipelineDepth"/> are windowed internally. A mid-batch
+    /// protocol or transport failure poisons the connection; cancellation drains the in-flight
+    /// replies and keeps the connection reusable under
+    /// <see cref="ConnectionReleasePolicy.DrainToReuse"/>.
+    /// </remarks>
+    Task<IReadOnlyList<UsenetStatResponse>> StatPipelinedAsync(
+        IReadOnlyList<SegmentId> segmentIds, CancellationToken cancellationToken)
+    {
+        throw new NotSupportedException(
+            $"{GetType().Name} does not support pipelined STAT commands.");
+    }
+
     Task<UsenetHeadResponse> HeadAsync(
         SegmentId segmentId, CancellationToken cancellationToken);
 

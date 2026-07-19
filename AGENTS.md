@@ -37,7 +37,7 @@ dotnet run --configuration Release --project UsenetSharp.Benchmarks
 - Keep nullable analysis enabled and resolve warnings rather than suppressing them without justification.
 
 ## Public API and compatibility
-- Primary API: `ConnectAsync`, `AuthenticateAsync`, `StatAsync`, `HeadAsync`, `BodyAsync`, `ArticleAsync`, `DateAsync`, and `WaitForReadyAsync`.
+- Primary API: `ConnectAsync`, `AuthenticateAsync`, `StatAsync`, `StatPipelinedAsync`, `HeadAsync`, `BodyAsync`, `ArticleAsync`, `DateAsync`, and `WaitForReadyAsync`.
 - `SegmentId` represents an NNTP message-id. BODY/ARTICLE streams are read-only and non-seekable.
 - Avoid silent public API breaks. Isolate compatibility changes, document them, and use semantic versioning.
 

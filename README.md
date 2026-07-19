@@ -122,6 +122,23 @@ if (response.ArticleExists)
 }
 ```
 
+For bulk existence checks, pipeline many STAT commands in one round-trip.
+Responses map one-to-one to the input list. Batches larger than
+`MaxPipelineDepth` are windowed automatically. One client owns one connection —
+use multiple clients for parallel batches:
+
+```csharp
+var results = await client.StatPipelinedAsync(segmentIds, cancellationToken);
+
+for (var i = 0; i < results.Count; i++)
+{
+    if (!results[i].ArticleExists)
+    {
+        Console.WriteLine($"Missing: {segmentIds[i]}");
+    }
+}
+```
+
 Calling `BODY` or `ARTICLE` directly is usually preferable to issuing a separate
 `STAT` request first.
 

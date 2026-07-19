@@ -1386,6 +1386,373 @@ public class UsenetClientDeterministicTests
     }
 
     [Test]
+    public async Task StatPipelinedAsync_SendsCommandsAheadAndMapsResponsesInOrder()
+    {
+        var commandsReceived = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var server = ScriptedNntpServer.StartConnectionScript(
+            async (reader, writer, cancellationToken) =>
+            {
+                Assert.That(
+                    await reader.ReadLineAsync(cancellationToken),
+                    Is.EqualTo("STAT <first@example.com>"));
+                Assert.That(
+                    await reader.ReadLineAsync(cancellationToken),
+                    Is.EqualTo("STAT <missing@example.com>"));
+                Assert.That(
+                    await reader.ReadLineAsync(cancellationToken),
+                    Is.EqualTo("STAT <third@example.com>"));
+                commandsReceived.SetResult();
+
+                await writer.WriteLineAsync("223 0 <first@example.com>");
+                await writer.WriteLineAsync("430 no such article");
+                await writer.WriteLineAsync("223 0 <third@example.com>");
+
+                Assert.That(
+                    await reader.ReadLineAsync(cancellationToken),
+                    Is.EqualTo("DATE"));
+                await writer.WriteLineAsync("111 20260709213000");
+            });
+        await using var client = new UsenetClient();
+        await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
+
+        var results = await client.StatPipelinedAsync(
+            new SegmentId[]
+            {
+                "first@example.com",
+                "missing@example.com",
+                "third@example.com"
+            },
+            CancellationToken.None);
+        await commandsReceived.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(results, Has.Count.EqualTo(3));
+            Assert.That(results[0].ArticleExists, Is.True);
+            Assert.That(results[0].ResponseCode, Is.EqualTo(223));
+            Assert.That(results[1].ArticleExists, Is.False);
+            Assert.That(results[1].ResponseCode, Is.EqualTo(430));
+            Assert.That(results[2].ArticleExists, Is.True);
+            Assert.That(results[2].ResponseCode, Is.EqualTo(223));
+        });
+        var date = await client.DateAsync(CancellationToken.None);
+        Assert.That(date.ResponseCode, Is.EqualTo((int)UsenetResponseType.DateAndTime));
+        Assert.That(client.IsHealthy, Is.True);
+    }
+
+    [Test]
+    public async Task StatPipelinedAsync_WindowsBatchesLargerThanMaxPipelineDepth()
+    {
+        var ids = Enumerable.Range(0, 10)
+            .Select(i => (SegmentId)$"id{i}@example.com")
+            .ToArray();
+        var firstWindow = new List<string>();
+        await using var server = ScriptedNntpServer.StartConnectionScript(
+            async (reader, writer, cancellationToken) =>
+            {
+                for (var index = 0; index < 4; index++)
+                {
+                    firstWindow.Add((await reader.ReadLineAsync(cancellationToken))!);
+                }
+
+                Assert.That(firstWindow, Is.EqualTo(new[]
+                {
+                    "STAT <id0@example.com>",
+                    "STAT <id1@example.com>",
+                    "STAT <id2@example.com>",
+                    "STAT <id3@example.com>"
+                }));
+
+                // Reply to the first window so the client can refill.
+                for (var index = 0; index < 4; index++)
+                {
+                    await writer.WriteLineAsync($"223 0 <id{index}@example.com>");
+                }
+
+                for (var index = 4; index < 10; index++)
+                {
+                    Assert.That(
+                        await reader.ReadLineAsync(cancellationToken),
+                        Is.EqualTo($"STAT <id{index}@example.com>"));
+                    await writer.WriteLineAsync($"223 0 <id{index}@example.com>");
+                }
+
+                Assert.That(
+                    await reader.ReadLineAsync(cancellationToken),
+                    Is.EqualTo("DATE"));
+                await writer.WriteLineAsync("111 20260709213000");
+            });
+        await using var client = new UsenetClient(new UsenetClientOptions
+        {
+            MaxPipelineDepth = 4
+        });
+        await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
+
+        var results = await client.StatPipelinedAsync(ids, CancellationToken.None);
+
+        Assert.That(results, Has.Count.EqualTo(10));
+        Assert.That(results.Select(r => r.ArticleExists), Is.All.True);
+        Assert.That(firstWindow, Has.Count.EqualTo(4));
+        var date = await client.DateAsync(CancellationToken.None);
+        Assert.That(date.ResponseCode, Is.EqualTo((int)UsenetResponseType.DateAndTime));
+        Assert.That(client.IsHealthy, Is.True);
+    }
+
+    [Test]
+    public async Task StatPipelinedAsync_EmptyBatch_ReturnsEmptyWithoutSendingCommands()
+    {
+        await using var server = new ScriptedNntpServer((_, _, _) => Task.CompletedTask);
+        await using var client = new UsenetClient();
+        await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
+
+        var results = await client.StatPipelinedAsync(
+            Array.Empty<SegmentId>(), CancellationToken.None);
+
+        Assert.That(results, Is.Empty);
+        Assert.That(server.Commands, Is.Empty);
+        Assert.That(client.IsHealthy, Is.True);
+    }
+
+    [Test]
+    public async Task StatPipelinedAsync_InvalidSegmentId_ThrowsBeforeWriting()
+    {
+        await using var server = ScriptedNntpServer.StartConnectionScript(
+            async (reader, writer, cancellationToken) =>
+            {
+                Assert.That(
+                    await reader.ReadLineAsync(cancellationToken),
+                    Is.EqualTo("DATE"));
+                await writer.WriteLineAsync("111 20260709213000");
+            });
+        await using var client = new UsenetClient();
+        await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
+
+        Assert.ThrowsAsync<ArgumentException>(() => client.StatPipelinedAsync(
+            new SegmentId[] { "safe@example.com", "bad\r\nid@example.com" },
+            CancellationToken.None));
+        Assert.ThrowsAsync<ArgumentException>(() => client.StatPipelinedAsync(
+            new SegmentId[] { "has space@example.com" },
+            CancellationToken.None));
+
+        var date = await client.DateAsync(CancellationToken.None);
+        Assert.That(date.ResponseCode, Is.EqualTo((int)UsenetResponseType.DateAndTime));
+        Assert.That(client.IsHealthy, Is.True);
+    }
+
+    [Test]
+    public async Task StatPipelinedAsync_DesyncEcho_PoisonsConnection()
+    {
+        await using var server = ScriptedNntpServer.StartConnectionScript(
+            async (reader, writer, cancellationToken) =>
+            {
+                _ = await reader.ReadLineAsync(cancellationToken);
+                await writer.WriteLineAsync("223 0 <wrong@example.com>");
+            });
+        await using var client = new UsenetClient();
+        await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
+
+        var exception = Assert.ThrowsAsync<UsenetProtocolException>(() =>
+            client.StatPipelinedAsync(
+                new SegmentId[] { "expected@example.com" },
+                CancellationToken.None));
+        Assert.That(exception!.Message, Does.Contain("desynchronized"));
+        Assert.That(client.IsHealthy, Is.False);
+        var followUp = Assert.ThrowsAsync<UsenetProtocolException>(() =>
+            client.StatAsync("other@example.com", CancellationToken.None));
+        Assert.That(followUp!.Message, Does.Contain("connection unusable"));
+    }
+
+    [Test]
+    public async Task StatPipelinedAsync_223WithoutEchoedId_IsAccepted()
+    {
+        await using var server = ScriptedNntpServer.StartConnectionScript(
+            async (reader, writer, cancellationToken) =>
+            {
+                Assert.That(
+                    await reader.ReadLineAsync(cancellationToken),
+                    Is.EqualTo("STAT <article@example.com>"));
+                await writer.WriteLineAsync("223 0");
+                Assert.That(
+                    await reader.ReadLineAsync(cancellationToken),
+                    Is.EqualTo("DATE"));
+                await writer.WriteLineAsync("111 20260709213000");
+            });
+        await using var client = new UsenetClient();
+        await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
+
+        var results = await client.StatPipelinedAsync(
+            new SegmentId[] { "article@example.com" },
+            CancellationToken.None);
+
+        Assert.That(results, Has.Count.EqualTo(1));
+        Assert.That(results[0].ArticleExists, Is.True);
+        Assert.That(results[0].ResponseCode, Is.EqualTo(223));
+        Assert.That(client.IsHealthy, Is.True);
+        var date = await client.DateAsync(CancellationToken.None);
+        Assert.That(date.ResponseCode, Is.EqualTo((int)UsenetResponseType.DateAndTime));
+    }
+
+    [Test]
+    public async Task StatPipelinedAsync_UnexpectedMultiLineCode_DrainsAndKeepsPositions()
+    {
+        await using var server = ScriptedNntpServer.StartConnectionScript(
+            async (reader, writer, cancellationToken) =>
+            {
+                Assert.That(
+                    await reader.ReadLineAsync(cancellationToken),
+                    Is.EqualTo("STAT <first@example.com>"));
+                Assert.That(
+                    await reader.ReadLineAsync(cancellationToken),
+                    Is.EqualTo("STAT <second@example.com>"));
+                await writer.WriteAsync("100 Help text follows\r\nhelp line\r\n.\r\n");
+                await writer.WriteLineAsync("223 0 <second@example.com>");
+                Assert.That(
+                    await reader.ReadLineAsync(cancellationToken),
+                    Is.EqualTo("DATE"));
+                await writer.WriteLineAsync("111 20260709213000");
+            });
+        await using var client = new UsenetClient();
+        await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
+
+        var results = await client.StatPipelinedAsync(
+            new SegmentId[] { "first@example.com", "second@example.com" },
+            CancellationToken.None);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(results[0].ResponseCode, Is.EqualTo(100));
+            Assert.That(results[0].ArticleExists, Is.False);
+            Assert.That(results[1].ResponseCode, Is.EqualTo(223));
+            Assert.That(results[1].ArticleExists, Is.True);
+        });
+        var date = await client.DateAsync(CancellationToken.None);
+        Assert.That(date.ResponseCode, Is.EqualTo((int)UsenetResponseType.DateAndTime));
+        Assert.That(client.IsHealthy, Is.True);
+    }
+
+    [Test]
+    public async Task StatPipelinedAsync_TruncatedResponses_PoisonsConnection()
+    {
+        await using var server = ScriptedNntpServer.StartConnectionScript(
+            async (reader, writer, cancellationToken) =>
+            {
+                _ = await reader.ReadLineAsync(cancellationToken);
+                _ = await reader.ReadLineAsync(cancellationToken);
+                await writer.WriteLineAsync("223 0 <first@example.com>");
+            });
+        await using var client = new UsenetClient();
+        await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
+
+        Assert.ThrowsAsync<UsenetProtocolException>(() => client.StatPipelinedAsync(
+            new SegmentId[] { "first@example.com", "second@example.com" },
+            CancellationToken.None));
+        Assert.That(client.IsHealthy, Is.False);
+    }
+
+    [Test]
+    public async Task StatPipelinedAsync_WriteTimeout_PoisonsConnection()
+    {
+        await using var server = new ScriptedNntpServer((_, _, _) => Task.CompletedTask);
+        await using var client = new UsenetClient(new UsenetClientOptions
+        {
+            ReadTimeout = TimeSpan.FromMilliseconds(200)
+        });
+        await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
+
+        var writeStream = new ControllableWriteStream();
+        writeStream.SetMode(ControllableWriteStream.WriteMode.BlockUntilCancelled);
+        client.ReplaceConnectionStreamForTests(writeStream);
+
+        Assert.ThrowsAsync<TimeoutException>(() => client.StatPipelinedAsync(
+            new SegmentId[] { "article@example.com" },
+            CancellationToken.None));
+        Assert.That(client.IsHealthy, Is.False);
+        var exception = Assert.ThrowsAsync<UsenetProtocolException>(() =>
+            client.StatAsync("other@example.com", CancellationToken.None));
+        Assert.That(exception!.Message, Does.Contain("connection unusable"));
+    }
+
+    [Test]
+    public async Task StatPipelinedAsync_CancellationDrainsAndReusesConnection()
+    {
+        var commandsReceived = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var sendReplies = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var server = ScriptedNntpServer.StartConnectionScript(
+            async (reader, writer, cancellationToken) =>
+            {
+                Assert.That(
+                    await reader.ReadLineAsync(cancellationToken),
+                    Is.EqualTo("STAT <first@example.com>"));
+                Assert.That(
+                    await reader.ReadLineAsync(cancellationToken),
+                    Is.EqualTo("STAT <second@example.com>"));
+                commandsReceived.SetResult();
+                await sendReplies.Task.WaitAsync(cancellationToken);
+                await writer.WriteLineAsync("223 0 <first@example.com>");
+                await writer.WriteLineAsync("223 0 <second@example.com>");
+                Assert.That(
+                    await reader.ReadLineAsync(cancellationToken),
+                    Is.EqualTo("DATE"));
+                await writer.WriteLineAsync("111 20260709213000");
+            });
+        await using var client = new UsenetClient(new UsenetClientOptions
+        {
+            CancellationPolicy = ConnectionReleasePolicy.DrainToReuse
+        });
+        await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
+        using var cts = new CancellationTokenSource();
+
+        var batchTask = client.StatPipelinedAsync(
+            new SegmentId[] { "first@example.com", "second@example.com" },
+            cts.Token);
+        await commandsReceived.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        cts.Cancel();
+        sendReplies.SetResult();
+
+        Assert.ThrowsAsync<OperationCanceledException>(async () => await batchTask);
+        Assert.That(client.IsHealthy, Is.True);
+        var date = await client.DateAsync(CancellationToken.None);
+        Assert.That(date.ResponseCode, Is.EqualTo((int)UsenetResponseType.DateAndTime));
+    }
+
+    [Test]
+    public async Task StatPipelinedAsync_CancellationWithAbandonPolicy_Poisons()
+    {
+        var commandsReceived = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var server = ScriptedNntpServer.StartConnectionScript(
+            async (reader, writer, cancellationToken) =>
+            {
+                Assert.That(
+                    await reader.ReadLineAsync(cancellationToken),
+                    Is.EqualTo("STAT <first@example.com>"));
+                Assert.That(
+                    await reader.ReadLineAsync(cancellationToken),
+                    Is.EqualTo("STAT <second@example.com>"));
+                commandsReceived.SetResult();
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            });
+        await using var client = new UsenetClient(new UsenetClientOptions
+        {
+            CancellationPolicy = ConnectionReleasePolicy.AbandonConnection
+        });
+        await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
+        using var cts = new CancellationTokenSource();
+
+        var batchTask = client.StatPipelinedAsync(
+            new SegmentId[] { "first@example.com", "second@example.com" },
+            cts.Token);
+        await commandsReceived.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        cts.Cancel();
+
+        Assert.ThrowsAsync<OperationCanceledException>(async () => await batchTask);
+        Assert.That(client.IsHealthy, Is.False);
+    }
+
+    [Test]
     public async Task HeadAsync_BlankLineInHeaders_ConsumesTerminatorAndKeepsSync()
     {
         await using var server = new ScriptedNntpServer(async (command, writer, _) =>

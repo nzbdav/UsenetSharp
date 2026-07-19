@@ -52,11 +52,13 @@ public sealed record UsenetClientOptions
         ConnectionReleasePolicy.DrainToReuse;
 
     /// <summary>
-    /// Gets the maximum number of BODY commands that may be pipelined in one batch.
+    /// Gets the maximum number of commands that may be in flight in one pipelined batch.
     /// </summary>
     /// <remarks>
     /// Defaults to 64 to stay within the RFC 3977 §3.5 TCP-window caution (~4 KiB)
-    /// for typical message-id lengths. Larger batches must be split by the caller.
+    /// for typical message-id lengths. Pipelined BODY batches require the caller
+    /// to split at this depth. <see cref="UsenetClient.StatPipelinedAsync"/> windows
+    /// larger STAT batches internally at this depth.
     /// </remarks>
     public int MaxPipelineDepth { get; init; } = 64;
 
