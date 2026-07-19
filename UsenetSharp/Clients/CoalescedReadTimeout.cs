@@ -5,9 +5,10 @@ internal sealed class CoalescedReadTimeout : IDisposable
     private readonly object _gate = new();
     private readonly CancellationToken _operationToken;
     private readonly CancellationTokenSource _timeoutCts;
+    private readonly CancellationToken _token;
     private readonly TimeProvider _timeProvider;
     private readonly TimeSpan _timeout;
-    private readonly ITimer _timer;
+    private ITimer? _timer;
     private long _readStartedTimestamp;
     private bool _readPending;
     private volatile bool _timeoutTriggered;
@@ -22,6 +23,7 @@ internal sealed class CoalescedReadTimeout : IDisposable
         _timeout = timeout;
         _timeProvider = timeProvider;
         _timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(operationToken);
+        _token = _timeoutCts.Token;
         _timer = timeProvider.CreateTimer(
             static state => ((CoalescedReadTimeout)state!).CheckForTimeout(),
             this,
@@ -29,7 +31,7 @@ internal sealed class CoalescedReadTimeout : IDisposable
             Timeout.InfiniteTimeSpan);
     }
 
-    public CancellationToken Token => _timeoutCts.Token;
+    public CancellationToken Token => _token;
 
     public bool IsTimeoutCancellation =>
         _timeoutTriggered && !_operationToken.IsCancellationRequested;
@@ -58,6 +60,8 @@ internal sealed class CoalescedReadTimeout : IDisposable
 
     private void CheckForTimeout()
     {
+        var shouldCancel = false;
+
         lock (_gate)
         {
             if (_disposed || _timeoutCts.IsCancellationRequested)
@@ -74,19 +78,40 @@ internal sealed class CoalescedReadTimeout : IDisposable
                 if (elapsed >= _timeout)
                 {
                     _timeoutTriggered = true;
-                    _timeoutCts.Cancel();
-                    return;
+                    shouldCancel = true;
                 }
-
-                nextCheck = _timeout - elapsed;
+                else
+                {
+                    nextCheck = _timeout - elapsed;
+                }
             }
 
-            _timer.Change(nextCheck, Timeout.InfiniteTimeSpan);
+            if (!shouldCancel)
+            {
+                _timer!.Change(nextCheck, Timeout.InfiniteTimeSpan);
+            }
+        }
+
+        if (!shouldCancel)
+        {
+            return;
+        }
+
+        try
+        {
+            _timeoutCts.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+            // Dispose raced ahead of Cancel; timeout is already terminal.
         }
     }
 
     public void Dispose()
     {
+        ITimer? timer;
+        CancellationTokenSource? timeoutCts;
+
         lock (_gate)
         {
             if (_disposed)
@@ -95,8 +120,12 @@ internal sealed class CoalescedReadTimeout : IDisposable
             }
 
             _disposed = true;
-            _timer.Dispose();
-            _timeoutCts.Dispose();
+            timer = _timer;
+            timeoutCts = _timeoutCts;
+            _timer = null;
         }
+
+        timer?.Dispose();
+        timeoutCts?.Dispose();
     }
 }
