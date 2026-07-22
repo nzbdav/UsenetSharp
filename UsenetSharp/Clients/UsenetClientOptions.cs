@@ -108,4 +108,14 @@ public sealed record UsenetClientOptions
     /// </remarks>
     public X509RevocationMode CertificateRevocationCheckMode { get; init; } =
         X509RevocationMode.NoCheck;
+
+    /// <summary>
+    /// Gets whether TLS certificate chain and hostname validation is bypassed.
+    /// </summary>
+    /// <remarks>
+    /// Defaults to <see langword="false"/>. Enable only for a specific trusted
+    /// server with a broken certificate. TLS traffic remains encrypted, but a
+    /// network attacker can impersonate the server and read NNTP credentials.
+    /// </remarks>
+    public bool SkipTlsVerification { get; init; }
 }
