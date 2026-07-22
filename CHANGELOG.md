@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.2.0](https://github.com/nzbdav/UsenetSharp/compare/v3.1.3...v3.2.0) (2026-07-22)
+
+
+### Features
+
+* **client:** support per-client TLS verification bypass ([#72](https://github.com/nzbdav/UsenetSharp/issues/72)) ([ba6d28f](https://github.com/nzbdav/UsenetSharp/commit/ba6d28fb824add78504539a5b8e6ddb7707d7e86))
+
 ## [3.1.3](https://github.com/nzbdav/UsenetSharp/compare/v3.1.2...v3.1.3) (2026-07-20)
 
 
