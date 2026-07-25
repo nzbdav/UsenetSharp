@@ -1,3 +1,4 @@
+using System.IO.Pipelines;
 using System.Net.Sockets;
 using System.Runtime.ExceptionServices;
 using UsenetSharp.Concurrency;
@@ -8,6 +9,7 @@ public partial class UsenetClient
 {
     private readonly UsenetClientOptions _options;
     private readonly TimeProvider _timeProvider;
+    private readonly PipeOptions _decodedBodyPipeOptions;
     private TcpClient? _tcpClient;
     private Stream? _stream;
     private NntpLineReader? _reader;
@@ -16,6 +18,7 @@ public partial class UsenetClient
     private readonly object _connectionCtsLock = new();
     private readonly object _stateLock = new();
     private int _connectionState;
+    private long _bufferedDecodedBodyBytes;
     private volatile ExceptionDispatchInfo? _backgroundException;
 
     /// <summary>Exposes the connected socket for deterministic socket-option tests.</summary>

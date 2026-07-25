@@ -772,6 +772,236 @@ public class UsenetClientDeterministicTests
     }
 
     [Test]
+    public async Task DecodedBodyAsync_ConfiguredPipeThresholdPausesUntilConsumerReads()
+    {
+        var expected = Enumerable.Range(0, 128).Select(static value => (byte)value).ToArray();
+        await using var server = new ScriptedNntpServer(async (command, writer, _) =>
+        {
+            if (command == "BODY <article@example.com>")
+            {
+                await WriteSimpleYencArticleAsync(writer, expected, $"size={expected.Length}");
+                return;
+            }
+
+            Assert.That(command, Is.EqualTo("DATE"));
+            await writer.WriteLineAsync("111 20260709213000");
+        });
+        await using var client = new UsenetClient(new UsenetClientOptions
+        {
+            DecodedBodyPauseWriterThreshold = 32,
+            DecodedBodyResumeWriterThreshold = 16
+        });
+        await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
+
+        var response = await client.DecodedBodyAsync(
+            "article@example.com", CancellationToken.None);
+        var stream = response.Stream!;
+        try
+        {
+            await WaitForConditionAsync(
+                () => client.BufferedDecodedBodyBytes == expected.Length);
+            var ready = client.WaitForReadyAsync(CancellationToken.None);
+            Assert.That(ready.IsCompleted, Is.False);
+
+            var consumed = new byte[120];
+            await stream.ReadExactlyAsync(consumed);
+            Assert.Multiple(() =>
+            {
+                Assert.That(consumed, Is.EqualTo(expected[..consumed.Length]));
+                Assert.That(client.BufferedDecodedBodyBytes,
+                    Is.EqualTo(expected.Length - consumed.Length));
+            });
+
+            await ready.WaitAsync(TimeSpan.FromSeconds(2));
+            var date = await client.DateAsync(CancellationToken.None);
+            Assert.That(date.ResponseCode, Is.EqualTo((int)UsenetResponseType.DateAndTime));
+        }
+        finally
+        {
+            await stream.DisposeAsync();
+        }
+
+        Assert.That(client.BufferedDecodedBodyBytes, Is.Zero);
+    }
+
+    [Test]
+    public async Task DecodedBodiesAsync_UndrainedSmallBodyBlocksNextResponse()
+    {
+        var firstExpected = new byte[] { 1, 2, 3, 4 };
+        var secondExpected = new byte[] { 5, 6, 7, 8 };
+        await using var server = ScriptedNntpServer.StartConnectionScript(
+            async (reader, writer, cancellationToken) =>
+            {
+                _ = await reader.ReadLineAsync(cancellationToken);
+                _ = await reader.ReadLineAsync(cancellationToken);
+                await WriteSimpleYencArticleAsync(
+                    writer, firstExpected, $"size={firstExpected.Length}", "first.bin");
+                await WriteSimpleYencArticleAsync(
+                    writer, secondExpected, $"size={secondExpected.Length}", "second.bin");
+            });
+        await using var client = new UsenetClient();
+        await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
+
+        var batch = await client.DecodedBodiesAsync(
+            new SegmentId[] { "first@example.com", "second@example.com" },
+            CancellationToken.None);
+        var first = await batch.Responses[0];
+        await WaitForConditionAsync(
+            () => client.BufferedDecodedBodyBytes == firstExpected.Length);
+
+        Assert.That(batch.Responses[1].IsCompleted, Is.False);
+        using var firstDecoded = new MemoryStream();
+        await first.Stream!.CopyToAsync(firstDecoded);
+
+        var second = await batch.Responses[1].WaitAsync(TimeSpan.FromSeconds(2));
+        using var secondDecoded = new MemoryStream();
+        await second.Stream!.CopyToAsync(secondDecoded);
+        Assert.Multiple(() =>
+        {
+            Assert.That(firstDecoded.ToArray(), Is.EqualTo(firstExpected));
+            Assert.That(secondDecoded.ToArray(), Is.EqualTo(secondExpected));
+            Assert.That(client.BufferedDecodedBodyBytes, Is.Zero);
+        });
+    }
+
+    [Test]
+    public async Task EnumerateDecodedBodiesAsync_YieldsResponsesInOrder()
+    {
+        var expected = new[]
+        {
+            new byte[] { 1, 2 },
+            new byte[] { 3, 4 }
+        };
+        await using var server = ScriptedNntpServer.StartConnectionScript(
+            async (reader, writer, cancellationToken) =>
+            {
+                _ = await reader.ReadLineAsync(cancellationToken);
+                _ = await reader.ReadLineAsync(cancellationToken);
+                await WriteSimpleYencArticleAsync(writer, expected[0], "size=2", "first.bin");
+                await WriteSimpleYencArticleAsync(writer, expected[1], "size=2", "second.bin");
+            });
+        await using var client = new UsenetClient();
+        await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
+        var completion = new TaskCompletionSource<ArticleBodyResult>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var actual = new List<(string SegmentId, byte[] Body)>();
+
+        await foreach (var response in client.EnumerateDecodedBodiesAsync(
+                           new SegmentId[] { "first@example.com", "second@example.com" },
+                           completion.SetResult,
+                           CancellationToken.None))
+        {
+            using var decoded = new MemoryStream();
+            await response.Stream!.CopyToAsync(decoded);
+            actual.Add((response.SegmentId, decoded.ToArray()));
+        }
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(actual.Select(static item => item.SegmentId),
+                Is.EqualTo(new[] { "first@example.com", "second@example.com" }));
+            Assert.That(actual.Select(static item => item.Body),
+                Is.EqualTo(expected).AsCollection);
+            Assert.That(client.BufferedDecodedBodyBytes, Is.Zero);
+        });
+        Assert.That(await completion.Task.WaitAsync(TimeSpan.FromSeconds(2)),
+            Is.EqualTo(ArticleBodyResult.Retrieved));
+    }
+
+    [Test]
+    public async Task EnumerateDecodedBodiesAsync_EarlyBreakDrainsAndReusesConnection()
+    {
+        await using var server = ScriptedNntpServer.StartConnectionScript(
+            async (reader, writer, cancellationToken) =>
+            {
+                for (var index = 0; index < 3; index++)
+                {
+                    _ = await reader.ReadLineAsync(cancellationToken);
+                }
+
+                for (var index = 0; index < 3; index++)
+                {
+                    await WriteSimpleYencArticleAsync(
+                        writer, [(byte)index], "size=1", $"part-{index}.bin");
+                }
+
+                Assert.That(
+                    await reader.ReadLineAsync(cancellationToken),
+                    Is.EqualTo("DATE"));
+                await writer.WriteLineAsync("111 20260709213000");
+            });
+        await using var client = new UsenetClient();
+        await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
+        var completion = new TaskCompletionSource<ArticleBodyResult>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        await foreach (var response in client.EnumerateDecodedBodiesAsync(
+                           new SegmentId[]
+                           {
+                               "first@example.com",
+                               "second@example.com",
+                               "third@example.com"
+                           },
+                           completion.SetResult,
+                           CancellationToken.None))
+        {
+            await response.Stream!.CopyToAsync(Stream.Null);
+            break;
+        }
+
+        Assert.That(await completion.Task.WaitAsync(TimeSpan.FromSeconds(2)),
+            Is.EqualTo(ArticleBodyResult.Cancelled));
+        Assert.That(client.BufferedDecodedBodyBytes, Is.Zero);
+        var date = await client.DateAsync(CancellationToken.None);
+        Assert.That(date.ResponseCode, Is.EqualTo((int)UsenetResponseType.DateAndTime));
+        Assert.That(client.IsHealthy, Is.True);
+    }
+
+    [Test]
+    public async Task EnumerateDecodedBodiesAsync_EarlyBreakDisposesUndrainedStream()
+    {
+        var firstBody = Enumerable.Range(0, 128)
+            .Select(static value => (byte)value)
+            .ToArray();
+        await using var server = ScriptedNntpServer.StartConnectionScript(
+            async (reader, writer, cancellationToken) =>
+            {
+                _ = await reader.ReadLineAsync(cancellationToken);
+                _ = await reader.ReadLineAsync(cancellationToken);
+                await WriteSimpleYencArticleAsync(
+                    writer, firstBody, $"size={firstBody.Length}", "first.bin");
+                await WriteSimpleYencArticleAsync(
+                    writer, [1], "size=1", "second.bin");
+
+                Assert.That(
+                    await reader.ReadLineAsync(cancellationToken),
+                    Is.EqualTo("DATE"));
+                await writer.WriteLineAsync("111 20260709213000");
+            });
+        await using var client = new UsenetClient();
+        await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
+        var completion = new TaskCompletionSource<ArticleBodyResult>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        await foreach (var _ in client.EnumerateDecodedBodiesAsync(
+                           new SegmentId[] { "first@example.com", "second@example.com" },
+                           completion.SetResult,
+                           CancellationToken.None))
+        {
+            await WaitForConditionAsync(
+                () => client.BufferedDecodedBodyBytes == firstBody.Length);
+            break;
+        }
+
+        Assert.That(await completion.Task.WaitAsync(TimeSpan.FromSeconds(2)),
+            Is.EqualTo(ArticleBodyResult.Cancelled));
+        Assert.That(client.BufferedDecodedBodyBytes, Is.Zero);
+        var date = await client.DateAsync(CancellationToken.None);
+        Assert.That(date.ResponseCode, Is.EqualTo((int)UsenetResponseType.DateAndTime));
+        Assert.That(client.IsHealthy, Is.True);
+    }
+
+    [Test]
     public async Task DecodedBodiesAsync_MissingBodyContinuesInProtocolOrder()
     {
         var expected = Array.Empty<byte>();
@@ -2091,6 +2321,24 @@ public class UsenetClientDeterministicTests
             Assert.Throws<ArgumentOutOfRangeException>(() =>
                 new UsenetClient(new UsenetClientOptions
                 {
+                    DecodedBodyPauseWriterThreshold = 0
+                }));
+            Assert.Throws<ArgumentOutOfRangeException>(() =>
+                new UsenetClient(new UsenetClientOptions
+                {
+                    DecodedBodyResumeWriterThreshold = -1
+                }));
+            Assert.Throws<ArgumentOutOfRangeException>(() =>
+                new UsenetClient(new UsenetClientOptions
+                {
+                    DecodedBodyPauseWriterThreshold = 1024,
+                    DecodedBodyResumeWriterThreshold = 2048
+                }));
+            Assert.Throws<ArgumentOutOfRangeException>(() =>
+                new UsenetClient(new UsenetClientOptions { MaxPipelineDepth = 0 }));
+            Assert.Throws<ArgumentOutOfRangeException>(() =>
+                new UsenetClient(new UsenetClientOptions
+                {
                     CertificateRevocationCheckMode = (X509RevocationMode)(-1)
                 }));
         });
@@ -2807,5 +3055,14 @@ public class UsenetClientDeterministicTests
                 ? Encoding.Latin1.GetString(encoded.ToArray()) + "\r\n"
                 : string.Empty) +
             $"=yend {yendFields}\r\n.\r\n");
+    }
+
+    private static async Task WaitForConditionAsync(Func<bool> condition)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        while (!condition())
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(10), timeout.Token);
+        }
     }
 }

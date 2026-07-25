@@ -147,7 +147,9 @@ public partial class UsenetClient
 
             if (responseCode == (int)UsenetResponseType.ArticleRetrievedBodyFollows)
             {
-                var pipe = new Pipe(DecodedBodyPipeOptions);
+                var pipe = new Pipe(_decodedBodyPipeOptions);
+                var decodedStream = new DecodedBodyReadStream(
+                    pipe.Reader.AsStream(), AdjustBufferedDecodedBodyBytes);
                 var headersCompletion =
                     new TaskCompletionSource<UsenetYencHeader?>(
                         TaskCreationOptions.RunContinuationsAsynchronously);
@@ -158,7 +160,8 @@ public partial class UsenetClient
                     headersCompletion,
                     operationCts,
                     cancellationToken,
-                    onConnectionReadyAgain);
+                    onConnectionReadyAgain,
+                    decodedStream);
                 operationCts = null;
 
                 return new UsenetDecodedBodyResponse
@@ -166,8 +169,7 @@ public partial class UsenetClient
                     SegmentId = segmentId,
                     ResponseCode = responseCode,
                     ResponseMessage = response,
-                    Stream = new YencStream(
-                        pipe.Reader.AsStream(), headersCompletion.Task),
+                    Stream = new YencStream(decodedStream, headersCompletion.Task),
                 };
             }
 
@@ -199,6 +201,7 @@ public partial class UsenetClient
         CancellationTokenSource operationCts,
         CancellationToken callerCancellationToken,
         Action<ArticleBodyResult>? onConnectionReadyAgain,
+        DecodedBodyReadStream decodedStream,
         bool releaseCommandLock = true,
         CoalescedReadTimeout? sharedReadTimeout = null,
         BatchDecodeBuffer? sharedEncodedBuffer = null)
@@ -288,7 +291,8 @@ public partial class UsenetClient
                             decoderState,
                             decodedCrc32,
                             _options.CrcValidation != YencCrcValidationMode.Off,
-                            cancellationToken).ConfigureAwait(false);
+                            cancellationToken,
+                            decodedStream).ConfigureAwait(false);
                         decoderState = flush.DecoderState;
                         decodedCrc32 = flush.Crc32;
                     }
@@ -375,7 +379,8 @@ public partial class UsenetClient
                             decoderState,
                             decodedCrc32,
                             _options.CrcValidation != YencCrcValidationMode.Off,
-                            cancellationToken).ConfigureAwait(false);
+                            cancellationToken,
+                            decodedStream).ConfigureAwait(false);
                         encodedLength = 0;
                         decoderState = flush.DecoderState;
                         decodedCrc32 = flush.Crc32;
@@ -401,7 +406,8 @@ public partial class UsenetClient
                         decoderState,
                         decodedCrc32,
                         _options.CrcValidation != YencCrcValidationMode.Off,
-                        cancellationToken).ConfigureAwait(false);
+                        cancellationToken,
+                        decodedStream).ConfigureAwait(false);
                     encodedLength = 0;
                     decoderState = flush.DecoderState;
                     decodedCrc32 = flush.Crc32;
@@ -435,7 +441,8 @@ public partial class UsenetClient
                         decoderState,
                         decodedCrc32,
                         _options.CrcValidation != YencCrcValidationMode.Off,
-                        cancellationToken).ConfigureAwait(false);
+                        cancellationToken,
+                        decodedStream).ConfigureAwait(false);
                     encodedLength = 0;
                     decoderState = flush.DecoderState;
                     decodedCrc32 = flush.Crc32;
@@ -534,7 +541,8 @@ public partial class UsenetClient
         RapidYencDecoderState? decoderState,
         uint crc32,
         bool computeCrc32,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        DecodedBodyReadStream decodedStream)
     {
         var destination = writer.GetSpan(encoded.Length);
         var decodedLength = YencDecoder.DecodeEx(
@@ -544,9 +552,15 @@ public partial class UsenetClient
             crc32 = Crc32.Compute(destination[..decodedLength], crc32);
         }
 
+        decodedStream.AddBufferedBytes(decodedLength);
         writer.Advance(decodedLength);
         var result = await writer.FlushAsync(cancellationToken).ConfigureAwait(false);
         return (result, decoderState, crc32);
+    }
+
+    private void AdjustBufferedDecodedBodyBytes(long delta)
+    {
+        Interlocked.Add(ref _bufferedDecodedBodyBytes, delta);
     }
 
     private static void ValidateDecodedBodyCrc32(

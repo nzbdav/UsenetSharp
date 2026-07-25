@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.IO.Pipelines;
+using System.Runtime.CompilerServices;
 using System.Text;
 using UsenetSharp.Models;
 using UsenetSharp.Streams;
@@ -13,7 +14,8 @@ public partial class UsenetClient
     /// </summary>
     /// <remarks>
     /// Consume or dispose each response stream before awaiting the next response. Later responses
-    /// remain blocked by bounded backpressure until earlier streams are drained.
+    /// remain blocked until earlier streams are drained, and each decoded pipe applies bounded
+    /// backpressure according to <see cref="UsenetClientOptions"/>.
     /// </remarks>
     public Task<UsenetDecodedBodyBatch> DecodedBodiesAsync(
         IReadOnlyList<SegmentId> segmentIds,
@@ -27,8 +29,9 @@ public partial class UsenetClient
     /// </summary>
     /// <remarks>
     /// Consume or dispose each response stream before awaiting the next response. Later responses
-    /// remain blocked by bounded backpressure until earlier streams are drained. The completion
-    /// callback reports <see cref="ArticleBodyResult.NotFound"/> for clean 430 responses,
+    /// remain blocked until earlier streams are drained, and each decoded pipe applies bounded
+    /// backpressure according to <see cref="UsenetClientOptions"/>. The completion callback reports
+    /// <see cref="ArticleBodyResult.NotFound"/> for clean 430 responses,
     /// <see cref="ArticleBodyResult.Cancelled"/> after a successfully drained cancellation, and
     /// <see cref="ArticleBodyResult.NotRetrieved"/> only when the connection is unsafe to reuse.
     /// </remarks>
@@ -97,13 +100,17 @@ public partial class UsenetClient
             }
 
             pumpStarted = true;
-            _ = ProcessDecodedBodyBatchAsync(
+            var completion = ProcessDecodedBodyBatchAsync(
                 segments,
                 completions,
                 cancellationToken,
                 onConnectionReadyAgain);
 
-            return new UsenetDecodedBodyBatch { Responses = responses };
+            return new UsenetDecodedBodyBatch
+            {
+                Responses = responses,
+                Completion = completion
+            };
         }
         catch (Exception exception)
         {
@@ -121,6 +128,91 @@ public partial class UsenetClient
                 _commandLock.Release();
                 InvokeBatchCallback(onConnectionReadyAgain, ArticleBodyResult.NotRetrieved);
             }
+        }
+    }
+
+    /// <summary>
+    /// Pipelines decoded BODY commands and yields their responses in request order.
+    /// </summary>
+    public IAsyncEnumerable<UsenetDecodedBodyResponse> EnumerateDecodedBodiesAsync(
+        IReadOnlyList<SegmentId> segmentIds,
+        CancellationToken cancellationToken)
+    {
+        return EnumerateDecodedBodiesAsync(segmentIds, null, cancellationToken);
+    }
+
+    /// <summary>
+    /// Pipelines decoded BODY commands, yields responses in request order, and reports when
+    /// the complete operation releases the connection.
+    /// </summary>
+    public async IAsyncEnumerable<UsenetDecodedBodyResponse> EnumerateDecodedBodiesAsync(
+        IReadOnlyList<SegmentId> segmentIds,
+        Action<ArticleBodyResult>? onConnectionReadyAgain,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        using var enumerationCts =
+            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        UsenetDecodedBodyBatch? batch = null;
+        UsenetDecodedBodyResponse? activeResponse = null;
+        var completed = false;
+        var yieldedResponseCount = 0;
+        try
+        {
+            batch = await DecodedBodiesAsync(
+                    segmentIds, onConnectionReadyAgain, enumerationCts.Token)
+                .ConfigureAwait(false);
+            foreach (var responseTask in batch.Responses)
+            {
+                var response = await responseTask.ConfigureAwait(false);
+                activeResponse = response;
+                yieldedResponseCount++;
+                yield return response;
+            }
+
+            await batch.Completion.ConfigureAwait(false);
+            activeResponse = null;
+            completed = true;
+        }
+        finally
+        {
+            if (!completed && batch != null)
+            {
+                DisposeResponseStream(activeResponse);
+                await enumerationCts.CancelAsync().ConfigureAwait(false);
+                await DisposeUnyieldedResponsesAsync(batch, yieldedResponseCount)
+                    .ConfigureAwait(false);
+                await batch.Completion.ConfigureAwait(false);
+            }
+        }
+    }
+
+    private static async Task DisposeUnyieldedResponsesAsync(
+        UsenetDecodedBodyBatch batch,
+        int yieldedResponseCount)
+    {
+        for (var index = yieldedResponseCount; index < batch.Responses.Count; index++)
+        {
+            try
+            {
+                var response = await batch.Responses[index].ConfigureAwait(false);
+                DisposeResponseStream(response);
+            }
+            catch
+            {
+                // Cancellation or a batch failure leaves no response stream to dispose.
+            }
+        }
+    }
+
+    private static void DisposeResponseStream(UsenetDecodedBodyResponse? response)
+    {
+        try
+        {
+            response?.Stream?.Dispose();
+        }
+        catch
+        {
+            // Cleanup must continue so the batch pump can release the command lease.
         }
     }
 
@@ -182,7 +274,7 @@ public partial class UsenetClient
 
         try
         {
-            for (; nextResponseIndex < segmentIds.Count; nextResponseIndex++)
+            while (nextResponseIndex < segmentIds.Count)
             {
                 var segmentId = segmentIds[nextResponseIndex];
                 var response = await ReadLineAsync(sharedReadTimeout).ConfigureAwait(false);
@@ -204,10 +296,13 @@ public partial class UsenetClient
                         ResponseMessage = response!,
                         Stream = null
                     });
+                    nextResponseIndex++;
                     continue;
                 }
 
-                var pipe = new Pipe(DecodedBodyPipeOptions);
+                var pipe = new Pipe(_decodedBodyPipeOptions);
+                var decodedStream = new DecodedBodyReadStream(
+                    pipe.Reader.AsStream(), AdjustBufferedDecodedBodyBytes);
                 var headersCompletion =
                     new TaskCompletionSource<UsenetYencHeader?>(
                         TaskCreationOptions.RunContinuationsAsynchronously);
@@ -216,7 +311,7 @@ public partial class UsenetClient
                     SegmentId = segmentId,
                     ResponseCode = responseCode,
                     ResponseMessage = response!,
-                    Stream = new YencStream(pipe.Reader.AsStream(), headersCompletion.Task)
+                    Stream = new YencStream(decodedStream, headersCompletion.Task)
                 });
 
                 var bodyReadResult = await ReadDecodedBodyToPipeAsync(
@@ -225,12 +320,16 @@ public partial class UsenetClient
                         operationCts,
                         callerCancellationToken,
                         onConnectionReadyAgain: null,
+                        decodedStream: decodedStream,
                         releaseCommandLock: false,
                         sharedReadTimeout: sharedReadTimeout,
                         sharedEncodedBuffer: sharedEncodedBuffer)
                     .ConfigureAwait(false);
                 if (bodyReadResult.Failure == null)
                 {
+                    nextResponseIndex++;
+                    await decodedStream.Completion.WaitAsync(operationCts.Token)
+                        .ConfigureAwait(false);
                     continue;
                 }
 

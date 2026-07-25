@@ -10,12 +10,6 @@ public partial class UsenetClient
 {
     private static readonly byte[] DateCommand = "DATE\r\n"u8.ToArray();
 
-    private static readonly PipeOptions DecodedBodyPipeOptions = new(
-        pauseWriterThreshold: 1024 * 1024,
-        resumeWriterThreshold: 512 * 1024,
-        minimumSegmentSize: 64 * 1024,
-        useSynchronizationContext: false);
-
     private static readonly PipeOptions RawBodyPipeOptions = new(
         pauseWriterThreshold: 1024 * 1024,
         resumeWriterThreshold: 512 * 1024,
