@@ -153,6 +153,7 @@ public partial class UsenetClient
         using var enumerationCts =
             CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         UsenetDecodedBodyBatch? batch = null;
+        UsenetDecodedBodyResponse? activeResponse = null;
         var completed = false;
         var yieldedResponseCount = 0;
         try
@@ -163,17 +164,20 @@ public partial class UsenetClient
             foreach (var responseTask in batch.Responses)
             {
                 var response = await responseTask.ConfigureAwait(false);
+                activeResponse = response;
                 yieldedResponseCount++;
                 yield return response;
             }
 
             await batch.Completion.ConfigureAwait(false);
+            activeResponse = null;
             completed = true;
         }
         finally
         {
             if (!completed && batch != null)
             {
+                DisposeResponseStream(activeResponse);
                 await enumerationCts.CancelAsync().ConfigureAwait(false);
                 await DisposeUnyieldedResponsesAsync(batch, yieldedResponseCount)
                     .ConfigureAwait(false);
@@ -191,12 +195,24 @@ public partial class UsenetClient
             try
             {
                 var response = await batch.Responses[index].ConfigureAwait(false);
-                response.Stream?.Dispose();
+                DisposeResponseStream(response);
             }
             catch
             {
                 // Cancellation or a batch failure leaves no response stream to dispose.
             }
+        }
+    }
+
+    private static void DisposeResponseStream(UsenetDecodedBodyResponse? response)
+    {
+        try
+        {
+            response?.Stream?.Dispose();
+        }
+        catch
+        {
+            // Cleanup must continue so the batch pump can release the command lease.
         }
     }
 

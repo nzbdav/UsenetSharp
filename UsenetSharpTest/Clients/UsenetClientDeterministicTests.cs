@@ -958,6 +958,50 @@ public class UsenetClientDeterministicTests
     }
 
     [Test]
+    public async Task EnumerateDecodedBodiesAsync_EarlyBreakDisposesUndrainedStream()
+    {
+        var firstBody = Enumerable.Range(0, 128)
+            .Select(static value => (byte)value)
+            .ToArray();
+        await using var server = ScriptedNntpServer.StartConnectionScript(
+            async (reader, writer, cancellationToken) =>
+            {
+                _ = await reader.ReadLineAsync(cancellationToken);
+                _ = await reader.ReadLineAsync(cancellationToken);
+                await WriteSimpleYencArticleAsync(
+                    writer, firstBody, $"size={firstBody.Length}", "first.bin");
+                await WriteSimpleYencArticleAsync(
+                    writer, [1], "size=1", "second.bin");
+
+                Assert.That(
+                    await reader.ReadLineAsync(cancellationToken),
+                    Is.EqualTo("DATE"));
+                await writer.WriteLineAsync("111 20260709213000");
+            });
+        await using var client = new UsenetClient();
+        await client.ConnectAsync("127.0.0.1", server.Port, false, CancellationToken.None);
+        var completion = new TaskCompletionSource<ArticleBodyResult>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        await foreach (var _ in client.EnumerateDecodedBodiesAsync(
+                           new SegmentId[] { "first@example.com", "second@example.com" },
+                           completion.SetResult,
+                           CancellationToken.None))
+        {
+            await WaitForConditionAsync(
+                () => client.BufferedDecodedBodyBytes == firstBody.Length);
+            break;
+        }
+
+        Assert.That(await completion.Task.WaitAsync(TimeSpan.FromSeconds(2)),
+            Is.EqualTo(ArticleBodyResult.Cancelled));
+        Assert.That(client.BufferedDecodedBodyBytes, Is.Zero);
+        var date = await client.DateAsync(CancellationToken.None);
+        Assert.That(date.ResponseCode, Is.EqualTo((int)UsenetResponseType.DateAndTime));
+        Assert.That(client.IsHealthy, Is.True);
+    }
+
+    [Test]
     public async Task DecodedBodiesAsync_MissingBodyContinuesInProtocolOrder()
     {
         var expected = Array.Empty<byte>();

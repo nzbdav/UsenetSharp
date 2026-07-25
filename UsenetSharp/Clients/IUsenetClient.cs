@@ -92,6 +92,7 @@ public interface IUsenetClient
     /// </summary>
     /// <remarks>
     /// Fully consume or dispose each response stream before requesting the next response.
+    /// Disposing the enumerator early also disposes the current response stream.
     /// </remarks>
     IAsyncEnumerable<UsenetDecodedBodyResponse> EnumerateDecodedBodiesAsync(
         IReadOnlyList<SegmentId> segmentIds, CancellationToken cancellationToken)
@@ -105,7 +106,8 @@ public interface IUsenetClient
     /// </summary>
     /// <remarks>
     /// Fully consume or dispose each response stream before requesting the next response.
-    /// Disposing the enumerator early cancels the remaining batch according to the configured
+    /// Disposing the enumerator early disposes the current response stream and cancels the
+    /// remaining batch according to the configured
     /// <see cref="UsenetClientOptions.CancellationPolicy"/>.
     /// </remarks>
     IAsyncEnumerable<UsenetDecodedBodyResponse> EnumerateDecodedBodiesAsync(

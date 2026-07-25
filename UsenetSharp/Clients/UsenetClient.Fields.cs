@@ -1,5 +1,5 @@
-using System.Net.Sockets;
 using System.IO.Pipelines;
+using System.Net.Sockets;
 using System.Runtime.ExceptionServices;
 using UsenetSharp.Concurrency;
 
