@@ -8,6 +8,11 @@ public interface IUsenetClient
 
     bool IsHealthy { get; }
 
+    /// <summary>
+    /// Gets decoded BODY bytes written to this client's pipes but not yet read or discarded.
+    /// </summary>
+    long BufferedDecodedBodyBytes => 0;
+
     Task ConnectAsync(
         string host, int port, bool useSsl, CancellationToken cancellationToken);
 
@@ -55,7 +60,8 @@ public interface IUsenetClient
     /// </summary>
     /// <remarks>
     /// Consume or dispose each response stream before awaiting the next response. Later responses
-    /// remain blocked by bounded backpressure until earlier streams are drained.
+    /// remain blocked until earlier streams are drained, and each decoded pipe applies bounded
+    /// backpressure according to <see cref="UsenetClientOptions"/>.
     /// </remarks>
     Task<UsenetDecodedBodyBatch> DecodedBodiesAsync(
         IReadOnlyList<SegmentId> segmentIds, CancellationToken cancellationToken)
@@ -68,9 +74,10 @@ public interface IUsenetClient
     /// </summary>
     /// <remarks>
     /// Consume or dispose each response stream before awaiting the next response. Later responses
-    /// remain blocked by bounded backpressure until earlier streams are drained. The completion
-    /// callback distinguishes clean not-found and drained-cancellation outcomes from failures that
-    /// make the connection unsafe to reuse.
+    /// remain blocked until earlier streams are drained, and each decoded pipe applies bounded
+    /// backpressure according to <see cref="UsenetClientOptions"/>. The completion callback
+    /// distinguishes clean not-found and drained-cancellation outcomes from failures that make the
+    /// connection unsafe to reuse.
     /// </remarks>
     Task<UsenetDecodedBodyBatch> DecodedBodiesAsync(
         IReadOnlyList<SegmentId> segmentIds, Action<ArticleBodyResult>? onConnectionReadyAgain,
@@ -78,6 +85,36 @@ public interface IUsenetClient
     {
         throw new NotSupportedException(
             $"{GetType().Name} does not support pipelined decoded BODY commands.");
+    }
+
+    /// <summary>
+    /// Pipelines decoded BODY commands and yields their responses in request order.
+    /// </summary>
+    /// <remarks>
+    /// Fully consume or dispose each response stream before requesting the next response.
+    /// </remarks>
+    IAsyncEnumerable<UsenetDecodedBodyResponse> EnumerateDecodedBodiesAsync(
+        IReadOnlyList<SegmentId> segmentIds, CancellationToken cancellationToken)
+    {
+        return EnumerateDecodedBodiesAsync(segmentIds, null, cancellationToken);
+    }
+
+    /// <summary>
+    /// Pipelines decoded BODY commands, yields responses in request order, and reports when
+    /// the complete operation releases the connection.
+    /// </summary>
+    /// <remarks>
+    /// Fully consume or dispose each response stream before requesting the next response.
+    /// Disposing the enumerator early cancels the remaining batch according to the configured
+    /// <see cref="UsenetClientOptions.CancellationPolicy"/>.
+    /// </remarks>
+    IAsyncEnumerable<UsenetDecodedBodyResponse> EnumerateDecodedBodiesAsync(
+        IReadOnlyList<SegmentId> segmentIds,
+        Action<ArticleBodyResult>? onConnectionReadyAgain,
+        CancellationToken cancellationToken)
+    {
+        throw new NotSupportedException(
+            $"{GetType().Name} does not support enumerating pipelined decoded BODY commands.");
     }
 
     Task<UsenetArticleResponse> ArticleAsync(

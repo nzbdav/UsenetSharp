@@ -1,3 +1,5 @@
+using System.IO.Pipelines;
+
 namespace UsenetSharp.Clients;
 
 public partial class UsenetClient : IUsenetClient, IDisposable, IAsyncDisposable
@@ -48,6 +50,21 @@ public partial class UsenetClient : IUsenetClient, IDisposable, IAsyncDisposable
                 nameof(options), "AbandonedBodyDrainLimit cannot be negative.");
         }
 
+        if (options.DecodedBodyPauseWriterThreshold <= 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options), "DecodedBodyPauseWriterThreshold must be greater than zero.");
+        }
+
+        if (options.DecodedBodyResumeWriterThreshold < 0 ||
+            options.DecodedBodyResumeWriterThreshold > options.DecodedBodyPauseWriterThreshold)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options),
+                "DecodedBodyResumeWriterThreshold must be non-negative and cannot exceed " +
+                "DecodedBodyPauseWriterThreshold.");
+        }
+
         if (options.MaxPipelineDepth < 1)
         {
             throw new ArgumentOutOfRangeException(
@@ -62,7 +79,17 @@ public partial class UsenetClient : IUsenetClient, IDisposable, IAsyncDisposable
 
         _options = options;
         _timeProvider = timeProvider;
+        _decodedBodyPipeOptions = new PipeOptions(
+            pauseWriterThreshold: options.DecodedBodyPauseWriterThreshold,
+            resumeWriterThreshold: options.DecodedBodyResumeWriterThreshold,
+            minimumSegmentSize: DecodedBodyChunkSize,
+            useSynchronizationContext: false);
     }
+
+    /// <summary>
+    /// Gets decoded BODY bytes written to this client's pipes but not yet read or discarded.
+    /// </summary>
+    public long BufferedDecodedBodyBytes => Interlocked.Read(ref _bufferedDecodedBodyBytes);
 
     public bool IsConnected =>
         Volatile.Read(ref _disposeState) == 0 &&

@@ -39,6 +39,24 @@ public sealed record UsenetClientOptions
     public long AbandonedBodyDrainLimit { get; init; } = 1024 * 1024;
 
     /// <summary>
+    /// Gets the number of unread decoded BODY bytes that pauses the pipe writer.
+    /// </summary>
+    /// <remarks>
+    /// Defaults to 1 MiB. A decode flush can temporarily exceed this threshold by
+    /// up to one decoded chunk before backpressure takes effect.
+    /// </remarks>
+    public long DecodedBodyPauseWriterThreshold { get; init; } = 1024 * 1024;
+
+    /// <summary>
+    /// Gets the number of unread decoded BODY bytes that resumes a paused pipe writer.
+    /// </summary>
+    /// <remarks>
+    /// Defaults to 512 KiB and must not exceed
+    /// <see cref="DecodedBodyPauseWriterThreshold"/>.
+    /// </remarks>
+    public long DecodedBodyResumeWriterThreshold { get; init; } = 512 * 1024;
+
+    /// <summary>
     /// Gets how cancelled body transfers release the connection.
     /// </summary>
     /// <remarks>

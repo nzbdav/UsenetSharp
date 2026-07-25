@@ -206,11 +206,64 @@ With `Require`, a missing, malformed, or mismatched CRC32 value fails the
 decoded response stream with `InvalidDataException`. `WhenPresent` tolerates
 trailers without a CRC field.
 
+### Pipeline decoded bodies with bounded memory
+
+`EnumerateDecodedBodiesAsync` sends a bounded batch of `BODY` commands and
+yields decoded responses in request order. Fully consume or dispose each stream
+before requesting the next response:
+
+```csharp
+var segmentIds = new SegmentId[]
+{
+    "first@example.com",
+    "second@example.com"
+};
+
+await foreach (var response in client.EnumerateDecodedBodiesAsync(
+                   segmentIds, cancellationToken))
+{
+    if (response.Stream is not { } stream)
+    {
+        continue;
+    }
+
+    await using (stream)
+    {
+        await stream.CopyToAsync(destination, cancellationToken);
+    }
+}
+```
+
+The existing `DecodedBodiesAsync` task-based API follows the same contract:
+await each response in order and consume or dispose its stream before awaiting
+the next task. Later responses do not become available while an earlier stream
+is undrained.
+
+Decoded pipe backpressure defaults to pausing near 1 MiB and resuming near
+512 KiB per client. Configure those thresholds when constructing the client:
+
+```csharp
+var client = new UsenetClient(new UsenetClientOptions
+{
+    DecodedBodyPauseWriterThreshold = 512 * 1024,
+    DecodedBodyResumeWriterThreshold = 256 * 1024
+});
+```
+
+`client.BufferedDecodedBodyBytes` reports decoded bytes currently written to
+that client's pipes but not yet read or discarded. Sum this value across a
+client pool when applying a process-wide consumer budget. It does not include
+consumer-owned buffers, encoded decode scratch space, unused pipe segment
+capacity, or TCP/kernel buffers. A decode flush can temporarily exceed the
+pause threshold by up to one decoded chunk before backpressure takes effect.
+
 ### Connection and stream lifecycle
 
 One `UsenetClient` owns one TCP/TLS connection. Commands on that connection are
 serialized. After a successful `BODY` or `ARTICLE`, the connection remains
 reserved until the NNTP body terminator is consumed or the transfer fails.
+Pipelined decoded bodies additionally keep later responses ordered behind the
+current stream's consumption or disposal.
 Dispose response streams promptly, and call `WaitForReadyAsync` when you need to
 know that the connection can accept another command. Use a separate client per
 parallel download.
