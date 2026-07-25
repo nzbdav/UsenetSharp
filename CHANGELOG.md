@@ -1,5 +1,18 @@
 # Changelog
 
+## [3.3.0](https://github.com/nzbdav/UsenetSharp/compare/v3.2.0...v3.3.0) (2026-07-25)
+
+
+### Features
+
+* **client:** bound and observe decoded body pipelines ([#77](https://github.com/nzbdav/UsenetSharp/issues/77)) ([ee42394](https://github.com/nzbdav/UsenetSharp/commit/ee42394f4acf56fb13e18573e09958aaea327298))
+
+
+### Bug Fixes
+
+* **deps:** Bump the github-actions group with 3 updates ([#75](https://github.com/nzbdav/UsenetSharp/issues/75)) ([b5ebac0](https://github.com/nzbdav/UsenetSharp/commit/b5ebac06103d4149fae05dbb844dbd828ae27f0d))
+* **deps:** Bump the nuget-minor-and-patch group with 2 updates ([#74](https://github.com/nzbdav/UsenetSharp/issues/74)) ([0e5e900](https://github.com/nzbdav/UsenetSharp/commit/0e5e90086144a24d6982cc77e396d4973472685b))
+
 ## [3.2.0](https://github.com/nzbdav/UsenetSharp/compare/v3.1.3...v3.2.0) (2026-07-22)
 
 
