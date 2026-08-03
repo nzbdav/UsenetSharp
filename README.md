@@ -1,5 +1,11 @@
 # UsenetSharp
 
+> **Development has moved.** This library is now developed in-tree in
+> [nzbdav/nzbdav](https://github.com/nzbdav/nzbdav) under `libs/UsenetSharp`.
+> Existing NuGet package versions remain available but are frozen; new work
+> lands in the main repository. This repo is archived for history.
+
+
 UsenetSharp is a .NET 10 library for asynchronous, read-only NNTP access and
 streaming yEnc decoding.
 
